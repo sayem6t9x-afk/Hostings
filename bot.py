@@ -30,10 +30,14 @@ app = Flask(__name__)
 def home():
     return "Bot Server is Running!"
 
-# Route to serve black/transparent PNG logo in Web App
-@app.route('/logo.png')
-def serve_logo():
-    return send_from_directory('.', 'logo.png')
+# Routes to serve specific logos for Zoho and Hotmail
+@app.route('/zoho_logo.png')
+def serve_zoho_logo():
+    return send_from_directory('.', 'zoho_logo.png')
+
+@app.route('/hotmail_logo.png')
+def serve_hotmail_logo():
+    return send_from_directory('.', 'hotmail_logo.png')
 
 @app.route('/mail/<int:chat_id>/<int:idx>')
 def view_mail(chat_id, idx):
@@ -42,7 +46,14 @@ def view_mail(chat_id, idx):
         cursor = conn.cursor()
         cursor.execute("SELECT html_content FROM email_cache WHERE user_id=? AND idx=?", (chat_id, idx))
         row = cursor.fetchone()
+        
+        # Get provider to display respective logo
+        cursor.execute("SELECT provider FROM users WHERE user_id=?", (chat_id,))
+        user_row = cursor.fetchone()
         conn.close()
+        
+        provider = user_row[0] if user_row else 'zoho'
+        logo_url = "/zoho_logo.png" if provider == 'zoho' else "/hotmail_logo.png"
         
         if row and row[0]:
             styled_content = f"""
@@ -56,7 +67,7 @@ def view_mail(chat_id, idx):
             </head>
             <body>
                 <div class="header">
-                    <img src="/logo.png" alt="Logo">
+                    <img src="{logo_url}" alt="Logo">
                 </div>
                 {row[0]}
             </body>
@@ -156,7 +167,6 @@ def send_welcome(message):
     chat_id = message.chat.id
     lang = get_user_lang(chat_id)
     
-    # If language not set, ask for language first
     if not lang or lang == 'en' and not has_user_record(chat_id):
         show_language_menu(chat_id)
     else:
@@ -197,7 +207,6 @@ def show_main_instruction(chat_id):
         "The bot will automatically detect the provider and fetch your inbox!"
     )
     bot.send_message(chat_id, instruction_text, parse_mode="Markdown", reply_markup=markup)
-    # Register next step handler so any text message is automatically captured as credentials
     bot.register_next_step_handler_by_chat_id(chat_id, process_auto_credentials)
 
 # --- Callback Handlers ---
@@ -252,7 +261,6 @@ def process_auto_credentials(message):
     chat_id = message.chat.id
     text = message.text.strip()
     
-    # Delete user input message for privacy
     try:
         bot.delete_message(chat_id, message.message_id)
     except:
@@ -261,9 +269,7 @@ def process_auto_credentials(message):
     try:
         parts = [p.strip() for p in text.split('|')]
         
-        # Auto-detect provider based on number of parts and email domain
         if len(parts) == 2 or ("zoho" in parts[0].lower()):
-            # Zoho Mail
             email_address, app_password = parts[0], parts[1]
             conn = sqlite3.connect('mail_bot.db', check_same_thread=False)
             cursor = conn.cursor()
@@ -278,7 +284,6 @@ def process_auto_credentials(message):
             threading.Timer(3.0, lambda: safe_delete(chat_id, msg.message_id)).start()
 
         elif len(parts) >= 4:
-            # Hotmail API
             email_address, password, refresh_token, client_id = parts[0], parts[1], parts[2], parts[3]
             conn = sqlite3.connect('mail_bot.db', check_same_thread=False)
             cursor = conn.cursor()
@@ -294,7 +299,6 @@ def process_auto_credentials(message):
         else:
             raise ValueError("Unknown format")
 
-        # Keep listening for future input if needed
         bot.register_next_step_handler_by_chat_id(chat_id, process_auto_credentials)
 
     except Exception:
