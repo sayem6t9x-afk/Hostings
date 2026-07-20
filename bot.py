@@ -319,9 +319,6 @@ def send_full_mail_to_chat(chat_id, idx):
     cursor = conn.cursor()
     cursor.execute("SELECT subject, sender, full_content FROM email_cache WHERE user_id=? AND idx=?", (chat_id, idx))
     row = cursor.fetchone()
-    
-    cursor.execute("SELECT provider FROM users WHERE user_id=?", (chat_id,))
-    user_row = cursor.fetchone()
     conn.close()
     
     if not row:
@@ -329,9 +326,6 @@ def send_full_mail_to_chat(chat_id, idx):
         return
         
     subject, sender, full_content = row
-    provider = user_row[0] if user_row and user_row[0] else 'zoho'
-    
-    # Custom Direct Image Link provided by user via ibbb
     logo_url = "https://i.ibb.co.com/x8LVnqMr/image-removebg-preview.png"
     
     clean_body = clean_html_tags(full_content)
@@ -452,15 +446,27 @@ def fetch_and_send_emails(chat_id, edit_message_id=None):
         markup.row(types.InlineKeyboardButton("🔄 Refresh", callback_data="action_refresh"), types.InlineKeyboardButton("➕ New Email", callback_data="action_new_email"))
         markup.row(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
 
+        logo_url = "https://i.ibb.co.com/x8LVnqMr/image-removebg-preview.png"
+
         if edit_message_id:
             try:
-                bot.edit_message_text(chat_id=chat_id, message_id=edit_message_id, text=response_text, parse_mode="Markdown", reply_markup=markup)
+                # Try editing as photo first if the original message was a photo
+                bot.edit_message_media(
+                    chat_id=chat_id,
+                    message_id=edit_message_id,
+                    media=types.InputMediaPhoto(logo_url, caption=response_text, parse_mode="Markdown"),
+                    reply_markup=markup
+                )
                 active_menu_messages[chat_id] = edit_message_id
             except Exception:
-                sent_msg = bot.send_message(chat_id, response_text, parse_mode="Markdown", reply_markup=markup)
-                active_menu_messages[chat_id] = sent_msg.message_id
+                try:
+                    bot.edit_message_text(chat_id=chat_id, message_id=edit_message_id, text=response_text, parse_mode="Markdown", reply_markup=markup)
+                    active_menu_messages[chat_id] = edit_message_id
+                except Exception:
+                    sent_msg = bot.send_photo(chat_id, logo_url, caption=response_text, parse_mode="Markdown", reply_markup=markup)
+                    active_menu_messages[chat_id] = sent_msg.message_id
         else:
-            sent_msg = bot.send_message(chat_id, response_text, parse_mode="Markdown", reply_markup=markup)
+            sent_msg = bot.send_photo(chat_id, logo_url, caption=response_text, parse_mode="Markdown", reply_markup=markup)
             active_menu_messages[chat_id] = sent_msg.message_id
 
     except Exception as e:
