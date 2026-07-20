@@ -144,7 +144,6 @@ def send_welcome(message):
     show_main_instruction(message.chat.id)
 
 def show_main_instruction(chat_id, message_id=None):
-    # Remove previous active menu message if exists to prevent duplication
     if chat_id in active_menu_messages:
         try:
             bot.delete_message(chat_id, active_menu_messages[chat_id])
@@ -261,7 +260,6 @@ def process_auto_credentials(message):
 
             msg = bot.send_message(chat_id, "✅ **Zoho Mail Detected & Login Successful!**", parse_mode="Markdown")
             
-            # Clean previous menu if present
             if chat_id in active_menu_messages:
                 try:
                     bot.delete_message(chat_id, active_menu_messages[chat_id])
@@ -332,7 +330,9 @@ def send_full_mail_to_chat(chat_id, idx):
         
     subject, sender, full_content = row
     provider = user_row[0] if user_row and user_row[0] else 'zoho'
-    logo_file = "zoho_logo.png" if provider == 'zoho' else "hotmail_logo.png"
+    
+    # Custom Direct Image Link provided by user via ibbb
+    logo_url = "https://i.ibb.co.com/x8LVnqMr/image-removebg-preview.png"
     
     clean_body = clean_html_tags(full_content)
     otp_label, otp_code = detect_otp_type(subject, clean_body)
@@ -349,19 +349,15 @@ def send_full_mail_to_chat(chat_id, idx):
     )
     
     try:
-        sent_msg = None
-        if os.path.exists(logo_file):
-            with open(logo_file, 'rb') as photo:
-                sent_msg = bot.send_photo(chat_id, photo, caption=message_text, parse_mode="Markdown")
-        else:
-            sent_msg = bot.send_message(chat_id, message_text, parse_mode="Markdown")
-            
+        sent_msg = bot.send_photo(chat_id, logo_url, caption=message_text, parse_mode="Markdown")
         if sent_msg:
             active_mail_messages[chat_id] = sent_msg.message_id
             threading.Timer(600, lambda: safe_delete(chat_id, sent_msg.message_id)).start()
-            
     except Exception:
-        bot.send_message(chat_id, message_text)
+        sent_msg = bot.send_message(chat_id, message_text, parse_mode="Markdown")
+        if sent_msg:
+            active_mail_messages[chat_id] = sent_msg.message_id
+            threading.Timer(600, lambda: safe_delete(chat_id, sent_msg.message_id)).start()
 
 # --- Fetch Emails ---
 def fetch_and_send_emails(chat_id, edit_message_id=None):
