@@ -393,7 +393,10 @@ def fetch_and_send_emails(chat_id, edit_message_id=None):
         markup.row(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
 
         if edit_message_id:
-            bot.edit_message_text(chat_id=chat_id, message_id=edit_message_id, text=response_text, parse_mode="Markdown", reply_markup=markup)
+            try:
+                bot.edit_message_text(chat_id=chat_id, message_id=edit_message_id, text=response_text, parse_mode="Markdown", reply_markup=markup)
+            except:
+                bot.send_message(chat_id, response_text, parse_mode="Markdown", reply_markup=markup)
         else:
             bot.send_message(chat_id, response_text, parse_mode="Markdown", reply_markup=markup)
 
