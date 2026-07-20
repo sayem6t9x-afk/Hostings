@@ -12,6 +12,7 @@ import html
 import os
 from flask import Flask
 import threading
+import time
 
 # --- Setup Logging ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -41,7 +42,7 @@ def view_mail(chat_id, idx):
         if row and row[0]:
             return row[0]
         else:
-            return "<h3>Error: Email not found or session expired. Please refresh the bot and try again.</h3>"
+            return "<h3>Error: Email not found or session expired. Please refresh the bot and start again.</h3>"
     except Exception as e:
         return f"<h3>Error loading email: {str(e)}</h3>"
 
@@ -60,7 +61,8 @@ def init_db():
             password TEXT,
             provider TEXT,
             refresh_token TEXT,
-            client_id TEXT
+            client_id TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
     cursor.execute('''
@@ -76,6 +78,21 @@ def init_db():
 
 init_db()
 user_states = {}
+
+# --- Background Task to Clean Data Every 10 Minutes ---
+def auto_cleanup_task():
+    while True:
+        try:
+            time.sleep(600) # 10 Minutes
+            conn = sqlite3.connect('mail_bot.db', check_same_thread=False)
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM users")
+            cursor.execute("DELETE FROM email_cache")
+            conn.commit()
+            conn.close()
+            logging.info("Auto-cleanup executed: Database cleared after 10 minutes.")
+        except Exception as e:
+            logging.error(f"Cleanup error: {e}")
 
 # --- HTML Cleaner & Extractor ---
 def clean_html_tags(raw_html):
@@ -101,6 +118,10 @@ def get_html_body(msg):
 # --- Main Menu ---
 @bot.message_handler(commands=['start', 'menu'])
 def send_welcome(message):
+    try:
+        bot.delete_message(message.chat.id, message.message_id)
+    except:
+        pass
     show_main_menu(message.chat.id)
 
 def show_main_menu(chat_id):
@@ -141,41 +162,82 @@ def handle_query(call):
         show_main_menu(chat_id)
             
     elif call.data == "action_menu":
-        bot.delete_message(chat_id=chat_id, message_id=call.message.message_id)
+        try:
+            bot.delete_message(chat_id=chat_id, message_id=call.message.message_id)
+        except:
+            pass
         show_main_menu(chat_id)
 
-# --- Process Credentials ---
+# --- Process Credentials with Auto Delete ---
 def process_zoho(message):
     chat_id = message.chat.id
     text = message.text.strip()
+    
+    # User er pathano message delete kora jate privacy thake
     try:
-        email_address, app_password = text.split('|')
+        bot.delete_message(chat_id, message.message_id)
+    except:
+        pass
+
+    try:
+        parts = [p.strip() for p in text.split('|')]
+        if len(parts) < 2:
+            raise ValueError("Invalid format")
+        email_address, app_password = parts[0], parts[1]
+
         conn = sqlite3.connect('mail_bot.db', check_same_thread=False)
         cursor = conn.cursor()
-        cursor.execute("REPLACE INTO users (user_id, email, password, provider, refresh_token, client_id) VALUES (?, ?, ?, ?, ?, ?)", (chat_id, email_address.strip(), app_password.strip(), 'zoho', None, None))
+        cursor.execute("REPLACE INTO users (user_id, email, password, provider, refresh_token, client_id) VALUES (?, ?, ?, ?, ?, ?)", (chat_id, email_address, app_password, 'zoho', None, None))
         conn.commit()
         conn.close()
-        bot.send_message(chat_id, "✅ **লগইন সফল!**", parse_mode="Markdown")
+
+        msg = bot.send_message(chat_id, "✅ **লগইন সফল!**", parse_mode="Markdown")
         fetch_and_send_emails(chat_id)
+        
+        # Success message auto delete after 3 seconds
+        threading.Timer(3.0, lambda: safe_delete(chat_id, msg.message_id)).start()
     except Exception:
-        bot.send_message(chat_id, "❌ **ভুল ফরম্যাট!** আবার চেষ্টা করুন।")
+        err_msg = bot.send_message(chat_id, "❌ **ভুল ফরম্যাট!** সঠিক ফরম্যাটে দিন: `email@zoho.com|AppPassword`", parse_mode="Markdown")
         bot.register_next_step_handler(message, process_zoho)
+        threading.Timer(5.0, lambda: safe_delete(chat_id, err_msg.message_id)).start()
 
 def process_hotmail(message):
     chat_id = message.chat.id
     text = message.text.strip()
+    
+    # User er pathano message delete kora
     try:
-        email_address, password, refresh_token, client_id = text.split('|')
+        bot.delete_message(chat_id, message.message_id)
+    except:
+        pass
+
+    try:
+        parts = [p.strip() for p in text.split('|')]
+        if len(parts) < 4:
+            raise ValueError("Invalid format")
+        email_address, password, refresh_token, client_id = parts[0], parts[1], parts[2], parts[3]
+
         conn = sqlite3.connect('mail_bot.db', check_same_thread=False)
         cursor = conn.cursor()
-        cursor.execute("REPLACE INTO users (user_id, email, password, provider, refresh_token, client_id) VALUES (?, ?, ?, ?, ?, ?)", (chat_id, email_address.strip(), password.strip(), 'hotmail', refresh_token.strip(), client_id.strip()))
+        cursor.execute("REPLACE INTO users (user_id, email, password, provider, refresh_token, client_id) VALUES (?, ?, ?, ?, ?, ?)", (chat_id, email_address, password, 'hotmail', refresh_token, client_id))
         conn.commit()
         conn.close()
-        bot.send_message(chat_id, "✅ **সেটআপ সম্পন্ন!**", parse_mode="Markdown")
+
+        msg = bot.send_message(chat_id, "✅ **সেটআপ সম্পন্ন!**", parse_mode="Markdown")
         fetch_and_send_emails(chat_id)
+        
+        # Success message auto delete after 3 seconds
+        threading.Timer(3.0, lambda: safe_delete(chat_id, msg.message_id)).start()
     except Exception:
-        bot.send_message(chat_id, "❌ **ভুল ফরম্যাট!** আবার চেষ্টা করুন।")
+        err_msg = bot.send_message(chat_id, "❌ **ভুল ফরম্যাট!** সঠিক ফরম্যাটে দিন: `email|password|refresh_token|client_id`", parse_mode="Markdown")
         bot.register_next_step_handler(message, process_hotmail)
+        threading.Timer(5.0, lambda: safe_delete(chat_id, err_msg.message_id)).start()
+
+def safe_delete(chat_id, message_id):
+    try:
+        bot.delete_message(chat_id, message_id)
+    except:
+        pass
 
 # --- Fetch Emails ---
 def fetch_and_send_emails(chat_id, edit_message_id=None):
@@ -275,10 +337,15 @@ def fetch_and_send_emails(chat_id, edit_message_id=None):
     except Exception as e:
         bot.send_message(chat_id, "⚠️ ডেটা রিড করতে সমস্যা হচ্ছে।")
 
-# --- Run Flask and Telebot Together ---
+# --- Run Flask, Telegram Bot and Background Cleanup Together ---
 if __name__ == "__main__":
+    # Start Flask server thread
     server_thread = threading.Thread(target=run_server)
     server_thread.start()
     
-    logging.info("Bot and Web Server are starting...")
+    # Start 10-minute auto-cleanup thread
+    cleanup_thread = threading.Thread(target=auto_cleanup_task, daemon=True)
+    cleanup_thread.start()
+    
+    logging.info("Bot, Web Server and Auto-Cleanup are starting...")
     bot.infinity_polling()
