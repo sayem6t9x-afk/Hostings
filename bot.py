@@ -20,6 +20,9 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 BOT_TOKEN = '8465423862:AAHkZn88S_jr1aZpBZXzJb_EUxLSXscPZzo'
 bot = telebot.TeleBot(BOT_TOKEN)
 
+# To keep track of user's currently open mail message ID for auto-removal
+active_mail_messages = {}
+
 # --- Database Setup ---
 def init_db():
     conn = sqlite3.connect('mail_bot.db', check_same_thread=False)
@@ -62,7 +65,8 @@ def auto_cleanup_task():
             cursor.execute("DELETE FROM email_cache")
             conn.commit()
             conn.close()
-            logging.info("Auto-cleanup executed: Database cleared after 10 minutes.")
+            active_mail_messages.clear()
+            logging.info("Auto-cleanup executed: Database and active views cleared after 10 minutes.")
         except Exception as e:
             logging.error(f"Cleanup error: {e}")
 
@@ -256,6 +260,12 @@ def safe_delete(chat_id, message_id):
 
 # --- Send Full Email Content Directly to Chat ---
 def send_full_mail_to_chat(chat_id, idx):
+    if chat_id in active_mail_messages:
+        try:
+            bot.delete_message(chat_id, active_mail_messages[chat_id])
+        except:
+            pass
+
     conn = sqlite3.connect('mail_bot.db', check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute("SELECT subject, sender, full_content FROM email_cache WHERE user_id=? AND idx=?", (chat_id, idx))
@@ -275,21 +285,27 @@ def send_full_mail_to_chat(chat_id, idx):
     
     clean_body = clean_html_tags(full_content)
     
-    # Format message nicely for Telegram chat
     message_text = (
-        f"📬 **Full Email Details:**\n\n"
+        f"📬 **This is Email #{idx + 1}**\n\n"
         f"👤 **From:** {sender}\n"
         f"📌 **Subject:** {subject}\n"
         f"━━━━━━━━━━━━━━━━━━━\n\n"
-        f"{clean_body[:3500]}" # Telegram message length limit protection
+        f"{clean_body[:3300]}\n\n"
+        f"⚠️ *This message will automatically delete after 10 minutes.*"
     )
     
     try:
+        sent_msg = None
         if os.path.exists(logo_file):
             with open(logo_file, 'rb') as photo:
-                bot.send_photo(chat_id, photo, caption=message_text, parse_mode="Markdown")
+                sent_msg = bot.send_photo(chat_id, photo, caption=message_text, parse_mode="Markdown")
         else:
-            bot.send_message(chat_id, message_text, parse_mode="Markdown")
+            sent_msg = bot.send_message(chat_id, message_text, parse_mode="Markdown")
+            
+        if sent_msg:
+            active_mail_messages[chat_id] = sent_msg.message_id
+            threading.Timer(600, lambda: safe_delete(chat_id, sent_msg.message_id)).start()
+            
     except Exception:
         bot.send_message(chat_id, message_text)
 
@@ -307,10 +323,9 @@ def fetch_and_send_emails(chat_id, edit_message_id=None):
 
     email_address, password, provider, refresh_token, client_id = result
     response_text = ""
-    cached_emails = [] # list of tuples: (subject, sender, html_body)
+    cached_emails = []
     
     try:
-        # ================= ZOHO IMAP LOGIC =================
         if provider == 'zoho':
             mail = imaplib.IMAP4_SSL('imap.zoho.com')
             mail.login(email_address, password)
@@ -338,7 +353,6 @@ def fetch_and_send_emails(chat_id, edit_message_id=None):
                             response_text += f"🔹 **From:** {from_}\n📌 **Subject:** {subject}\n━━━━━━━━━━━━━━━━━━━\n"
             mail.logout()
 
-        # ================= HOTMAIL API LOGIC =================
         elif provider == 'hotmail':
             url = "https://api-tools.yshshopmails.shop/api/v1/public/outlook/read_inbox"
             payload = {"data": f"{email_address}|{password}|{refresh_token}|{client_id}"}
@@ -362,7 +376,6 @@ def fetch_and_send_emails(chat_id, edit_message_id=None):
             else:
                 response_text = "❌ **API Error:** Could not load data."
 
-        # Save Emails to Database Cache
         conn = sqlite3.connect('mail_bot.db', check_same_thread=False)
         cursor = conn.cursor()
         cursor.execute("DELETE FROM email_cache WHERE user_id=?", (chat_id,))
@@ -375,7 +388,6 @@ def fetch_and_send_emails(chat_id, edit_message_id=None):
         current_time = datetime.now().strftime("%I:%M:%S %p")
         response_text += f"\n🕒 *Last Refresh:* {current_time}"
         
-        # Setup Chat Buttons (No Web App Needed!)
         markup = types.InlineKeyboardMarkup()
         mail_buttons = []
         for i in range(len(cached_emails)):
@@ -400,5 +412,8 @@ if __name__ == "__main__":
     cleanup_thread = threading.Thread(target=auto_cleanup_task, daemon=True)
     cleanup_thread.start()
     
+    # Clears any existing webhook conflicts automatically on startup
+    bot.remove_webhook()
+    
     logging.info("Bot and Auto-Cleanup are starting...")
-    bot.infinity_polling()
+    bot.infinity_polling(skip_pending=True)
