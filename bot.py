@@ -12,7 +12,6 @@ import html
 import os
 import threading
 import time
-from flask import Flask
 
 # --- Setup Logging ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -23,17 +22,6 @@ bot = telebot.TeleBot(BOT_TOKEN)
 
 # To keep track of user's currently open mail message ID for auto-removal
 active_mail_messages = {}
-
-# --- Flask Server to Bind Port for Render Web Service ---
-app = Flask(__name__)
-
-@app.route('/')
-def home():
-    return "Mail Bot is Running Successfully!"
-
-def run_flask():
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host='0.0.0.0', port=port)
 
 # --- Database Setup ---
 def init_db():
@@ -419,18 +407,13 @@ def fetch_and_send_emails(chat_id, edit_message_id=None):
     except Exception as e:
         bot.send_message(chat_id, "⚠️ Error reading data.")
 
-# --- Run Flask Server, Background Cleanup, and Telegram Bot Together ---
+# --- Run Telegram Bot and Background Cleanup Together ---
 if __name__ == "__main__":
-    # Start Flask server thread for Render port binding
-    flask_thread = threading.Thread(target=run_flask, daemon=True)
-    flask_thread.start()
-    
-    # Start 10-minute auto cleanup thread
     cleanup_thread = threading.Thread(target=auto_cleanup_task, daemon=True)
     cleanup_thread.start()
     
-    # Clear any previous webhooks to avoid conflict 409 error
+    # Clears any existing webhook conflicts automatically on startup
     bot.remove_webhook()
     
-    logging.info("Bot, Flask Server, and Auto-Cleanup are starting...")
+    logging.info("Bot and Auto-Cleanup are starting...")
     bot.infinity_polling(skip_pending=True)
