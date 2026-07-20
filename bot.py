@@ -166,23 +166,16 @@ def show_main_instruction(chat_id, message_id=None):
         "⚠️ *All data and opened emails automatically delete after 10 minutes for safety.*"
     )
     
-    logo_url = "https://i.ibb.co.com/x8LVnqMr/image-removebg-preview.png"
-
     if message_id:
         try:
-            bot.edit_message_media(
-                chat_id=chat_id,
-                message_id=message_id,
-                media=types.InputMediaPhoto(logo_url, caption=instruction_text, parse_mode="Markdown"),
-                reply_markup=markup
-            )
+            bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=instruction_text, parse_mode="Markdown", reply_markup=markup)
             active_menu_messages[chat_id] = message_id
             bot.register_next_step_handler_by_chat_id(chat_id, process_auto_credentials)
             return
         except Exception:
             pass
             
-    sent_msg = bot.send_photo(chat_id, logo_url, caption=instruction_text, parse_mode="Markdown", reply_markup=markup)
+    sent_msg = bot.send_message(chat_id, instruction_text, parse_mode="Markdown", reply_markup=markup)
     active_menu_messages[chat_id] = sent_msg.message_id
     bot.register_next_step_handler_by_chat_id(chat_id, process_auto_credentials)
 
@@ -208,14 +201,8 @@ def handle_query(call):
         )
         markup = types.InlineKeyboardMarkup()
         markup.add(types.InlineKeyboardButton("🔙 Back to Menu", callback_data="action_menu"))
-        logo_url = "https://i.ibb.co.com/x8LVnqMr/image-removebg-preview.png"
         try:
-            bot.edit_message_media(
-                chat_id=chat_id,
-                message_id=message_id,
-                media=types.InputMediaPhoto(logo_url, caption=help_text, parse_mode="Markdown"),
-                reply_markup=markup
-            )
+            bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=help_text, parse_mode="Markdown", reply_markup=markup)
         except Exception:
             pass
 
@@ -229,14 +216,8 @@ def handle_query(call):
         )
         markup = types.InlineKeyboardMarkup()
         markup.add(types.InlineKeyboardButton("🔙 Back to Menu", callback_data="action_menu"))
-        logo_url = "https://i.ibb.co.com/x8LVnqMr/image-removebg-preview.png"
         try:
-            bot.edit_message_media(
-                chat_id=chat_id,
-                message_id=message_id,
-                media=types.InputMediaPhoto(logo_url, caption=about_text, parse_mode="Markdown"),
-                reply_markup=markup
-            )
+            bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=about_text, parse_mode="Markdown", reply_markup=markup)
         except Exception:
             pass
 
@@ -465,26 +446,15 @@ def fetch_and_send_emails(chat_id, edit_message_id=None):
         markup.row(types.InlineKeyboardButton("🔄 Refresh", callback_data="action_refresh"), types.InlineKeyboardButton("➕ New Email", callback_data="action_new_email"))
         markup.row(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
 
-        logo_url = "https://i.ibb.co.com/x8LVnqMr/image-removebg-preview.png"
-
         if edit_message_id:
             try:
-                bot.edit_message_media(
-                    chat_id=chat_id,
-                    message_id=edit_message_id,
-                    media=types.InputMediaPhoto(logo_url, caption=response_text, parse_mode="Markdown"),
-                    reply_markup=markup
-                )
+                bot.edit_message_text(chat_id=chat_id, message_id=edit_message_id, text=response_text, parse_mode="Markdown", reply_markup=markup)
                 active_menu_messages[chat_id] = edit_message_id
             except Exception:
-                try:
-                    bot.edit_message_text(chat_id=chat_id, message_id=edit_message_id, text=response_text, parse_mode="Markdown", reply_markup=markup)
-                    active_menu_messages[chat_id] = edit_message_id
-                except Exception:
-                    sent_msg = bot.send_photo(chat_id, logo_url, caption=response_text, parse_mode="Markdown", reply_markup=markup)
-                    active_menu_messages[chat_id] = sent_msg.message_id
+                sent_msg = bot.send_message(chat_id, response_text, parse_mode="Markdown", reply_markup=markup)
+                active_menu_messages[chat_id] = sent_msg.message_id
         else:
-            sent_msg = bot.send_photo(chat_id, logo_url, caption=response_text, parse_mode="Markdown", reply_markup=markup)
+            sent_msg = bot.send_message(chat_id, response_text, parse_mode="Markdown", reply_markup=markup)
             active_menu_messages[chat_id] = sent_msg.message_id
 
     except Exception as e:
