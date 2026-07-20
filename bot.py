@@ -10,78 +10,15 @@ from datetime import datetime
 import re
 import html
 import os
-from flask import Flask, send_from_directory
 import threading
 import time
 
 # --- Setup Logging ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# --- Bot Token & App URL ---
+# --- Bot Token ---
 BOT_TOKEN = '8465423862:AAHkZn88S_jr1aZpBZXzJb_EUxLSXscPZzo'
 bot = telebot.TeleBot(BOT_TOKEN)
-
-APP_URL = os.environ.get("APP_URL", "https://hostings-gtvu.onrender.com")  
-
-# --- Web Server (Flask) Setup ---
-app = Flask(__name__)
-
-@app.route('/')
-def home():
-    return "Bot Server is Running!"
-
-# Routes to serve specific logos for Zoho and Hotmail
-@app.route('/zoho_logo.png')
-def serve_zoho_logo():
-    return send_from_directory('.', 'zoho_logo.png')
-
-@app.route('/hotmail_logo.png')
-def serve_hotmail_logo():
-    return send_from_directory('.', 'hotmail_logo.png')
-
-@app.route('/mail/<int:chat_id>/<int:idx>')
-def view_mail(chat_id, idx):
-    try:
-        conn = sqlite3.connect('mail_bot.db', check_same_thread=False)
-        cursor = conn.cursor()
-        cursor.execute("SELECT html_content FROM email_cache WHERE user_id=? AND idx=?", (chat_id, idx))
-        row = cursor.fetchone()
-        
-        # Get provider to display respective logo
-        cursor.execute("SELECT provider FROM users WHERE user_id=?", (chat_id,))
-        user_row = cursor.fetchone()
-        conn.close()
-        
-        provider = user_row[0] if user_row else 'zoho'
-        logo_url = "/zoho_logo.png" if provider == 'zoho' else "/hotmail_logo.png"
-        
-        if row and row[0]:
-            styled_content = f"""
-            <html>
-            <head>
-                <style>
-                    body {{ background-color: #121212; color: #e0e0e0; font-family: Arial, sans-serif; padding: 20px; }}
-                    .header {{ text-align: center; margin-bottom: 20px; padding-bottom: 10px; border-bottom: 1px solid #333; }}
-                    .header img {{ width: 60px; height: 60px; object-fit: contain; }}
-                </style>
-            </head>
-            <body>
-                <div class="header">
-                    <img src="{logo_url}" alt="Logo">
-                </div>
-                {row[0]}
-            </body>
-            </html>
-            """
-            return styled_content
-        else:
-            return "<h3>⚠️ Mail session expired or not found. Please go back to the bot, click 'Refresh', and try opening the mail again.</h3>"
-    except Exception as e:
-        return f"<h3>Error loading email: {str(e)}</h3>"
-
-def run_server():
-    port = int(os.environ.get('PORT', 8080))
-    app.run(host='0.0.0.0', port=port)
 
 # --- Database Setup ---
 def init_db():
@@ -103,7 +40,9 @@ def init_db():
         CREATE TABLE IF NOT EXISTS email_cache (
             user_id INTEGER,
             idx INTEGER,
-            html_content TEXT,
+            subject TEXT,
+            sender TEXT,
+            full_content TEXT,
             PRIMARY KEY (user_id, idx)
         )
     ''')
@@ -154,7 +93,7 @@ def get_user_lang(chat_id):
     cursor.execute("SELECT language FROM users WHERE user_id=?", (chat_id,))
     row = cursor.fetchone()
     conn.close()
-    return row[0] if row and row[0] else 'en'
+    return row[0] if row and row[0] else None
 
 # --- Main Menu / Start ---
 @bot.message_handler(commands=['start', 'menu'])
@@ -167,18 +106,10 @@ def send_welcome(message):
     chat_id = message.chat.id
     lang = get_user_lang(chat_id)
     
-    if not lang or lang == 'en' and not has_user_record(chat_id):
+    if not lang:
         show_language_menu(chat_id)
     else:
         show_main_instruction(chat_id)
-
-def has_user_record(chat_id):
-    conn = sqlite3.connect('mail_bot.db', check_same_thread=False)
-    cursor = conn.cursor()
-    cursor.execute("SELECT user_id FROM users WHERE user_id=?", (chat_id,))
-    row = cursor.fetchone()
-    conn.close()
-    return row is not None
 
 def show_language_menu(chat_id):
     markup = types.InlineKeyboardMarkup(row_width=2)
@@ -190,7 +121,7 @@ def show_language_menu(chat_id):
     )
     bot.send_message(
         chat_id,
-        "🌐 **Please select your language:**",
+        "🌐 **Please select your language / भाषा चुनें / ជ្រើសរើសភាសា / ভাষা সিলেক্ট করুন:**",
         parse_mode="Markdown",
         reply_markup=markup
     )
@@ -218,13 +149,15 @@ def handle_query(call):
         lang = call.data.split("_")[1]
         conn = sqlite3.connect('mail_bot.db', check_same_thread=False)
         cursor = conn.cursor()
-        cursor.execute("UPDATE users SET language=? WHERE user_id=?", (lang, chat_id))
-        if cursor.rowcount == 0:
+        cursor.execute("SELECT user_id FROM users WHERE user_id=?", (chat_id,))
+        if cursor.fetchone():
+            cursor.execute("UPDATE users SET language=? WHERE user_id=?", (lang, chat_id))
+        else:
             cursor.execute("INSERT INTO users (user_id, language) VALUES (?, ?)", (chat_id, lang))
         conn.commit()
         conn.close()
         
-        bot.answer_callback_query(call.id, "Language saved successfully!")
+        bot.answer_callback_query(call.id, "Language changed successfully!")
         try:
             bot.delete_message(chat_id, call.message.message_id)
         except:
@@ -241,6 +174,11 @@ def handle_query(call):
     elif call.data == "action_refresh":
         bot.answer_callback_query(call.id, "Refreshing Inbox...")
         fetch_and_send_emails(chat_id, edit_message_id=call.message.message_id)
+        
+    elif call.data.startswith("view_mail_"):
+        idx = int(call.data.split("_")[2])
+        send_full_mail_to_chat(chat_id, idx)
+        bot.answer_callback_query(call.id)
         
     elif call.data == "action_new_email":
         try:
@@ -273,8 +211,10 @@ def process_auto_credentials(message):
             email_address, app_password = parts[0], parts[1]
             conn = sqlite3.connect('mail_bot.db', check_same_thread=False)
             cursor = conn.cursor()
-            cursor.execute("UPDATE users SET email=?, password=?, provider=?, refresh_token=NULL, client_id=NULL WHERE user_id=?", (email_address, app_password, 'zoho', chat_id))
-            if cursor.rowcount == 0:
+            cursor.execute("SELECT user_id FROM users WHERE user_id=?", (chat_id,))
+            if cursor.fetchone():
+                cursor.execute("UPDATE users SET email=?, password=?, provider=?, refresh_token=NULL, client_id=NULL WHERE user_id=?", (email_address, app_password, 'zoho', chat_id))
+            else:
                 cursor.execute("INSERT INTO users (user_id, email, password, provider) VALUES (?, ?, ?, ?)", (chat_id, email_address, app_password, 'zoho'))
             conn.commit()
             conn.close()
@@ -287,8 +227,10 @@ def process_auto_credentials(message):
             email_address, password, refresh_token, client_id = parts[0], parts[1], parts[2], parts[3]
             conn = sqlite3.connect('mail_bot.db', check_same_thread=False)
             cursor = conn.cursor()
-            cursor.execute("UPDATE users SET email=?, password=?, provider=?, refresh_token=?, client_id=? WHERE user_id=?", (email_address, password, 'hotmail', refresh_token, client_id, chat_id))
-            if cursor.rowcount == 0:
+            cursor.execute("SELECT user_id FROM users WHERE user_id=?", (chat_id,))
+            if cursor.fetchone():
+                cursor.execute("UPDATE users SET email=?, password=?, provider=?, refresh_token=?, client_id=? WHERE user_id=?", (email_address, password, 'hotmail', refresh_token, client_id, chat_id))
+            else:
                 cursor.execute("INSERT INTO users (user_id, email, password, provider, refresh_token, client_id) VALUES (?, ?, ?, ?, ?, ?)", (chat_id, email_address, password, 'hotmail', refresh_token, client_id))
             conn.commit()
             conn.close()
@@ -312,6 +254,45 @@ def safe_delete(chat_id, message_id):
     except:
         pass
 
+# --- Send Full Email Content Directly to Chat ---
+def send_full_mail_to_chat(chat_id, idx):
+    conn = sqlite3.connect('mail_bot.db', check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute("SELECT subject, sender, full_content FROM email_cache WHERE user_id=? AND idx=?", (chat_id, idx))
+    row = cursor.fetchone()
+    
+    cursor.execute("SELECT provider FROM users WHERE user_id=?", (chat_id,))
+    user_row = cursor.fetchone()
+    conn.close()
+    
+    if not row:
+        bot.send_message(chat_id, "⚠️ Mail session expired. Please refresh the inbox.")
+        return
+        
+    subject, sender, full_content = row
+    provider = user_row[0] if user_row and user_row[0] else 'zoho'
+    logo_file = "zoho_logo.png" if provider == 'zoho' else "hotmail_logo.png"
+    
+    clean_body = clean_html_tags(full_content)
+    
+    # Format message nicely for Telegram chat
+    message_text = (
+        f"📬 **Full Email Details:**\n\n"
+        f"👤 **From:** {sender}\n"
+        f"📌 **Subject:** {subject}\n"
+        f"━━━━━━━━━━━━━━━━━━━\n\n"
+        f"{clean_body[:3500]}" # Telegram message length limit protection
+    )
+    
+    try:
+        if os.path.exists(logo_file):
+            with open(logo_file, 'rb') as photo:
+                bot.send_photo(chat_id, photo, caption=message_text, parse_mode="Markdown")
+        else:
+            bot.send_message(chat_id, message_text, parse_mode="Markdown")
+    except Exception:
+        bot.send_message(chat_id, message_text)
+
 # --- Fetch Emails ---
 def fetch_and_send_emails(chat_id, edit_message_id=None):
     conn = sqlite3.connect('mail_bot.db', check_same_thread=False)
@@ -326,7 +307,7 @@ def fetch_and_send_emails(chat_id, edit_message_id=None):
 
     email_address, password, provider, refresh_token, client_id = result
     response_text = ""
-    fetched_htmls = []
+    cached_emails = [] # list of tuples: (subject, sender, html_body)
     
     try:
         # ================= ZOHO IMAP LOGIC =================
@@ -347,12 +328,13 @@ def fetch_and_send_emails(chat_id, edit_message_id=None):
                         if isinstance(response_part, tuple):
                             msg = email.message_from_bytes(response_part[1])
                             raw_html = get_html_body(msg)
-                            fetched_htmls.append(raw_html)
                             
                             subject, encoding = decode_header(msg["Subject"])[0]
                             if isinstance(subject, bytes):
                                 subject = subject.decode(encoding if encoding else "utf-8", errors="ignore")
-                            from_ = msg.get("From")
+                            from_ = msg.get("From", "Unknown")
+                            
+                            cached_emails.append((subject, from_, raw_html))
                             response_text += f"🔹 **From:** {from_}\n📌 **Subject:** {subject}\n━━━━━━━━━━━━━━━━━━━\n"
             mail.logout()
 
@@ -370,34 +352,37 @@ def fetch_and_send_emails(chat_id, edit_message_id=None):
                 else:
                     response_text = f"📨 **Inbox ({email_address}):**\n\n"
                     for msg in emails[:3]:
-                        fetched_htmls.append(msg.get("message", "No Content"))
+                        raw_body = msg.get("message", "No Content")
                         subject = msg.get("subject", "No Subject")
-                        clean_body = clean_html_tags(msg.get("message", ""))[:150] + "..."
+                        from_sender = msg.get("from", "Outlook User")
+                        
+                        cached_emails.append((subject, from_sender, raw_body))
+                        clean_body = clean_html_tags(raw_body)[:150] + "..."
                         response_text += f"📌 **Subject:** {subject}\n📝 **Message:** {clean_body}\n━━━━━━━━━━━━━━━━━━━\n"
             else:
                 response_text = "❌ **API Error:** Could not load data."
 
-        # Save HTMLs to Database Cache
+        # Save Emails to Database Cache
         conn = sqlite3.connect('mail_bot.db', check_same_thread=False)
         cursor = conn.cursor()
         cursor.execute("DELETE FROM email_cache WHERE user_id=?", (chat_id,))
-        for idx, html_content in enumerate(fetched_htmls):
-            cursor.execute("INSERT INTO email_cache (user_id, idx, html_content) VALUES (?, ?, ?)", (chat_id, idx, html_content))
+        for idx, (sub, snd, html_content) in enumerate(cached_emails):
+            cursor.execute("INSERT INTO email_cache (user_id, idx, subject, sender, full_content) VALUES (?, ?, ?, ?, ?)", 
+                           (chat_id, idx, sub, snd, html_content))
         conn.commit()
         conn.close()
 
         current_time = datetime.now().strftime("%I:%M:%S %p")
         response_text += f"\n🕒 *Last Refresh:* {current_time}"
         
-        # Setup Web App Buttons
+        # Setup Chat Buttons (No Web App Needed!)
         markup = types.InlineKeyboardMarkup()
-        html_buttons = []
-        for i in range(len(fetched_htmls)):
-            web_app_url = f"{APP_URL}/mail/{chat_id}/{i}"
-            html_buttons.append(types.InlineKeyboardButton(f"📱 Full Mail {i+1}", web_app=types.WebAppInfo(url=web_app_url)))
+        mail_buttons = []
+        for i in range(len(cached_emails)):
+            mail_buttons.append(types.InlineKeyboardButton(f"📖 Read Mail {i+1}", callback_data=f"view_mail_{i}"))
         
-        for i in range(0, len(html_buttons), 2):
-            markup.row(*html_buttons[i:i+2])
+        for i in range(0, len(mail_buttons), 2):
+            markup.row(*mail_buttons[i:i+2])
 
         markup.row(types.InlineKeyboardButton("🔄 Refresh", callback_data="action_refresh"), types.InlineKeyboardButton("➕ New Email", callback_data="action_new_email"))
         markup.row(types.InlineKeyboardButton("🔙 Back to Menu", callback_data="action_menu"))
@@ -410,13 +395,10 @@ def fetch_and_send_emails(chat_id, edit_message_id=None):
     except Exception as e:
         bot.send_message(chat_id, "⚠️ Error reading data.")
 
-# --- Run Flask, Telegram Bot and Background Cleanup Together ---
+# --- Run Telegram Bot and Background Cleanup Together ---
 if __name__ == "__main__":
-    server_thread = threading.Thread(target=run_server)
-    server_thread.start()
-    
     cleanup_thread = threading.Thread(target=auto_cleanup_task, daemon=True)
     cleanup_thread.start()
     
-    logging.info("Bot, Web Server and Auto-Cleanup are starting...")
+    logging.info("Bot and Auto-Cleanup are starting...")
     bot.infinity_polling()
