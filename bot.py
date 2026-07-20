@@ -102,6 +102,37 @@ def get_html_body(msg):
         return msg.get_payload(decode=True).decode(errors='ignore')
     return "No HTML Content Found."
 
+# --- Smart OTP / Service Detector ---
+def detect_otp_type(subject, content):
+    combined_text = (subject + " " + content).lower()
+    
+    # Platform Detection
+    service_name = "🔑 GENERAL OTP"
+    if "facebook" in combined_text or "fb" in combined_text:
+        service_name = "📘 FACEBOOK OTP (FB-OTP)"
+    elif "instagram" in combined_text or "ig" in combined_text:
+        service_name = "📸 INSTAGRAM OTP (IG-OTP)"
+    elif "google" in combined_text or "gmail" in combined_text:
+        service_name = "🌐 GOOGLE OTP"
+    elif "whatsapp" in combined_text:
+        service_name = "💚 WHATSAPP OTP"
+    elif "telegram" in combined_text:
+        service_name = "✈️ TELEGRAM OTP"
+    elif "twitter" in combined_text or "x.com" in combined_text:
+        service_name = "🐦 TWITTER / X OTP"
+    elif "discord" in combined_text:
+        service_name = "🎮 DISCORD OTP"
+    elif "microsoft" in combined_text or "outlook" in combined_text:
+        service_name = "🪟 MICROSOFT OTP"
+    elif "netflix" in combined_text:
+        service_name = "🍿 NETFLIX OTP"
+
+    # Code / Numbers Extraction (4 to 8 digit codes)
+    code_match = re.search(r'\b\d{4,8}\b', combined_text)
+    extracted_code = code_match.group(0) if code_match else "Not Found"
+    
+    return service_name, extracted_code
+
 # --- Main Menu / Start ---
 @bot.message_handler(commands=['start', 'menu'])
 def send_welcome(message):
@@ -122,7 +153,7 @@ def show_main_instruction(chat_id, message_id=None):
     )
     
     instruction_text = (
-        "🤖 **Auto Secure Mail Reader Bot**\n\n"
+        "🤖 **Auto Secure Mail & OTP Reader Bot**\n\n"
         "Send your mail credentials directly in chat to load your inbox:\n\n"
         "🏢 **For Zoho:** `email@zohomail.com|AppPassword`\n"
         "🔥 **For Hotmail:** `email|password|refresh_token|client_id`\n\n"
@@ -132,56 +163,58 @@ def show_main_instruction(chat_id, message_id=None):
     if message_id:
         try:
             bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=instruction_text, parse_mode="Markdown", reply_markup=markup)
-        except:
-            bot.send_message(chat_id, instruction_text, parse_mode="Markdown", reply_markup=markup)
-    else:
-        bot.send_message(chat_id, instruction_text, parse_mode="Markdown", reply_markup=markup)
-        
+            bot.register_next_step_handler_by_chat_id(chat_id, process_auto_credentials)
+            return
+        except Exception:
+            pass
+            
+    bot.send_message(chat_id, instruction_text, parse_mode="Markdown", reply_markup=markup)
     bot.register_next_step_handler_by_chat_id(chat_id, process_auto_credentials)
 
 # --- Callback Handlers ---
 @bot.callback_query_handler(func=lambda call: True)
 def handle_query(call):
     chat_id = call.message.chat.id
+    message_id = call.message.message_id
     
     if call.data == "action_menu":
         bot.answer_callback_query(call.id, "Welcome to Main Menu")
-        show_main_instruction(chat_id, message_id=call.message.message_id)
+        show_main_instruction(chat_id, message_id=message_id)
 
     elif call.data == "action_help":
         bot.answer_callback_query(call.id, "Help Guide")
         help_text = (
             "📖 **Bot Usage Guide:**\n\n"
             "1. Send your credentials in the exact specified format.\n"
-            "2. Click on any `📖 Read Mail` button to check content directly.\n"
+            "2. Click on any `📖 Read Mail` button to check full content and extracted OTP.\n"
             "3. Opening a new mail will instantly remove the previous one.\n"
             "4. Everything wipes out automatically every 10 minutes."
         )
         markup = types.InlineKeyboardMarkup()
         markup.add(types.InlineKeyboardButton("🔙 Back to Menu", callback_data="action_menu"))
         try:
-            bot.edit_message_text(chat_id=chat_id, message_id=call.message.message_id, text=help_text, parse_mode="Markdown", reply_markup=markup)
-        except:
-            bot.send_message(chat_id, help_text, parse_mode="Markdown", reply_markup=markup)
+            bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=help_text, parse_mode="Markdown", reply_markup=markup)
+        except Exception:
+            pass
 
     elif call.data == "action_about":
         bot.answer_callback_query(call.id, "About Bot")
         about_text = (
             "ℹ️ **About Secure Mail Bot:**\n\n"
-            "• Direct Chat Telegram Email Reader\n"
-            "• Built-in Auto-Deletion and Anti-Leak Security\n"
-            "• Supports Zoho and Hotmail (Outlook) APIs"
+            "• Direct Chat Telegram Email & OTP Reader\n"
+            "• Smart Auto-Detection for FB, IG, Google & More\n"
+            "• Built-in Auto-Deletion Security"
         )
         markup = types.InlineKeyboardMarkup()
         markup.add(types.InlineKeyboardButton("🔙 Back to Menu", callback_data="action_menu"))
         try:
-            bot.edit_message_text(chat_id=chat_id, message_id=call.message.message_id, text=about_text, parse_mode="Markdown", reply_markup=markup)
-        except:
-            bot.send_message(chat_id, about_text, parse_mode="Markdown", reply_markup=markup)
+            bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=about_text, parse_mode="Markdown", reply_markup=markup)
+        except Exception:
+            pass
 
     elif call.data == "action_refresh" or call.data == "action_refresh_direct":
         bot.answer_callback_query(call.id, "Refreshing Inbox...")
-        fetch_and_send_emails(chat_id, edit_message_id=call.message.message_id)
+        fetch_and_send_emails(chat_id, edit_message_id=message_id)
         
     elif call.data.startswith("view_mail_"):
         idx = int(call.data.split("_")[2])
@@ -189,7 +222,7 @@ def handle_query(call):
         bot.answer_callback_query(call.id)
         
     elif call.data == "action_new_email":
-        show_main_instruction(chat_id, message_id=call.message.message_id)
+        show_main_instruction(chat_id, message_id=message_id)
 
 # --- Auto Detect and Process Credentials ---
 def process_auto_credentials(message):
@@ -251,7 +284,7 @@ def safe_delete(chat_id, message_id):
     except:
         pass
 
-# --- Send Full Email Content Directly to Chat ---
+# --- Send Full Email Content and Extracted OTP Directly to Chat ---
 def send_full_mail_to_chat(chat_id, idx):
     if chat_id in active_mail_messages:
         try:
@@ -277,13 +310,16 @@ def send_full_mail_to_chat(chat_id, idx):
     logo_file = "zoho_logo.png" if provider == 'zoho' else "hotmail_logo.png"
     
     clean_body = clean_html_tags(full_content)
+    otp_label, otp_code = detect_otp_type(subject, clean_body)
     
     message_text = (
-        f"📬 **This is Email #{idx + 1}**\n\n"
+        f"📬 **Email Details #{idx + 1}**\n\n"
+        f"🏷️ **Detected Type:** `{otp_label}`\n"
+        f"🔑 **Extracted Code:** `{otp_code}`\n\n"
         f"👤 **From:** {sender}\n"
         f"📌 **Subject:** {subject}\n"
         f"━━━━━━━━━━━━━━━━━━━\n\n"
-        f"{clean_body[:3300]}\n\n"
+        f"{clean_body[:3000]}\n\n"
         f"⚠️ *This message will automatically delete after 10 minutes.*"
     )
     
@@ -311,7 +347,7 @@ def fetch_and_send_emails(chat_id, edit_message_id=None):
     conn.close()
 
     if not result:
-        show_main_instruction(chat_id)
+        show_main_instruction(chat_id, message_id=edit_message_id)
         return
 
     email_address, password, provider, refresh_token, client_id = result
@@ -329,7 +365,7 @@ def fetch_and_send_emails(chat_id, edit_message_id=None):
             if not email_ids:
                 response_text = f"📭 **{email_address}** Inbox is empty."
             else:
-                response_text = f"📨 **Latest Emails ({email_address}):**\n\n"
+                response_text = f"📨 **Latest Inbox ({email_address}):**\n\n"
                 for e_id in reversed(email_ids[-3:]):
                     status, msg_data = mail.fetch(e_id, "(RFC822)")
                     for response_part in msg_data:
@@ -343,7 +379,9 @@ def fetch_and_send_emails(chat_id, edit_message_id=None):
                             from_ = msg.get("From", "Unknown")
                             
                             cached_emails.append((subject, from_, raw_html))
-                            response_text += f"🔹 **From:** {from_}\n📌 **Subject:** {subject}\n━━━━━━━━━━━━━━━━━━━\n"
+                            clean_b = clean_html_tags(raw_html)
+                            lbl, code = detect_otp_type(subject, clean_b)
+                            response_text += f"🔹 **[{lbl}]** Code: `{code}`\n📌 **Subject:** {subject}\n━━━━━━━━━━━━━━━━━━━\n"
             mail.logout()
 
         elif provider == 'hotmail':
@@ -364,8 +402,9 @@ def fetch_and_send_emails(chat_id, edit_message_id=None):
                         from_sender = msg.get("from", "Outlook User")
                         
                         cached_emails.append((subject, from_sender, raw_body))
-                        clean_body = clean_html_tags(raw_body)[:150] + "..."
-                        response_text += f"📌 **Subject:** {subject}\n📝 **Message:** {clean_body}\n━━━━━━━━━━━━━━━━━━━\n"
+                        clean_body = clean_html_tags(raw_body)
+                        lbl, code = detect_otp_type(subject, clean_body)
+                        response_text += f"🔹 **[{lbl}]** Code: `{code}`\n📌 **Subject:** {subject}\n━━━━━━━━━━━━━━━━━━━\n"
             else:
                 response_text = "❌ **API Error:** Could not load data."
 
@@ -395,13 +434,19 @@ def fetch_and_send_emails(chat_id, edit_message_id=None):
         if edit_message_id:
             try:
                 bot.edit_message_text(chat_id=chat_id, message_id=edit_message_id, text=response_text, parse_mode="Markdown", reply_markup=markup)
-            except:
+            except Exception:
                 bot.send_message(chat_id, response_text, parse_mode="Markdown", reply_markup=markup)
         else:
             bot.send_message(chat_id, response_text, parse_mode="Markdown", reply_markup=markup)
 
     except Exception as e:
-        bot.send_message(chat_id, "⚠️ Error reading data.")
+        if edit_message_id:
+            try:
+                bot.edit_message_text(chat_id=chat_id, message_id=edit_message_id, text="⚠️ Error reading data or session expired.", parse_mode="Markdown")
+            except Exception:
+                bot.send_message(chat_id, "⚠️ Error reading data.")
+        else:
+            bot.send_message(chat_id, "⚠️ Error reading data.")
 
 # --- Run Flask Server, Background Cleanup, and Telegram Bot Together ---
 if __name__ == "__main__":
@@ -414,4 +459,9 @@ if __name__ == "__main__":
     bot.remove_webhook()
     
     logging.info("Bot, Flask Server, and Auto-Cleanup are starting...")
-    bot.infinity_polling(skip_pending=True)
+    while True:
+        try:
+            bot.infinity_polling(skip_pending=True, interval=1, timeout=20)
+        except Exception as e:
+            logging.error(f"Polling error occurred: {e}")
+            time.sleep(5)
