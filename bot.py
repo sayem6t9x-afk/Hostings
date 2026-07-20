@@ -21,8 +21,9 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 BOT_TOKEN = '8465423862:AAHkZn88S_jr1aZpBZXzJb_EUxLSXscPZzo'
 bot = telebot.TeleBot(BOT_TOKEN)
 
-# To keep track of user's currently open mail message ID for auto-removal
+# To track active messages for clean removal
 active_mail_messages = {}
+active_menu_messages = {}
 
 # --- Flask Server to Bind Port for Render Web Service ---
 app = Flask(__name__)
@@ -77,6 +78,7 @@ def auto_cleanup_task():
             conn.commit()
             conn.close()
             active_mail_messages.clear()
+            active_menu_messages.clear()
             logging.info("Auto-cleanup executed: Database and active views cleared after 10 minutes.")
         except Exception as e:
             logging.error(f"Cleanup error: {e}")
@@ -106,7 +108,6 @@ def get_html_body(msg):
 def detect_otp_type(subject, content):
     combined_text = (subject + " " + content).lower()
     
-    # Platform Detection
     service_name = "🔑 GENERAL OTP"
     if "facebook" in combined_text or "fb" in combined_text:
         service_name = "📘 FACEBOOK OTP (FB-OTP)"
@@ -127,7 +128,6 @@ def detect_otp_type(subject, content):
     elif "netflix" in combined_text:
         service_name = "🍿 NETFLIX OTP"
 
-    # Code / Numbers Extraction (4 to 8 digit codes)
     code_match = re.search(r'\b\d{4,8}\b', combined_text)
     extracted_code = code_match.group(0) if code_match else "Not Found"
     
@@ -144,6 +144,13 @@ def send_welcome(message):
     show_main_instruction(message.chat.id)
 
 def show_main_instruction(chat_id, message_id=None):
+    # Remove previous active menu message if exists to prevent duplication
+    if chat_id in active_menu_messages:
+        try:
+            bot.delete_message(chat_id, active_menu_messages[chat_id])
+        except:
+            pass
+
     markup = types.InlineKeyboardMarkup(row_width=2)
     markup.add(
         types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"),
@@ -163,12 +170,14 @@ def show_main_instruction(chat_id, message_id=None):
     if message_id:
         try:
             bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=instruction_text, parse_mode="Markdown", reply_markup=markup)
+            active_menu_messages[chat_id] = message_id
             bot.register_next_step_handler_by_chat_id(chat_id, process_auto_credentials)
             return
         except Exception:
             pass
             
-    bot.send_message(chat_id, instruction_text, parse_mode="Markdown", reply_markup=markup)
+    sent_msg = bot.send_message(chat_id, instruction_text, parse_mode="Markdown", reply_markup=markup)
+    active_menu_messages[chat_id] = sent_msg.message_id
     bot.register_next_step_handler_by_chat_id(chat_id, process_auto_credentials)
 
 # --- Callback Handlers ---
@@ -176,6 +185,7 @@ def show_main_instruction(chat_id, message_id=None):
 def handle_query(call):
     chat_id = call.message.chat.id
     message_id = call.message.message_id
+    active_menu_messages[chat_id] = message_id
     
     if call.data == "action_menu":
         bot.answer_callback_query(call.id, "Welcome to Main Menu")
@@ -250,6 +260,14 @@ def process_auto_credentials(message):
             conn.close()
 
             msg = bot.send_message(chat_id, "✅ **Zoho Mail Detected & Login Successful!**", parse_mode="Markdown")
+            
+            # Clean previous menu if present
+            if chat_id in active_menu_messages:
+                try:
+                    bot.delete_message(chat_id, active_menu_messages[chat_id])
+                except:
+                    pass
+                    
             fetch_and_send_emails(chat_id)
             threading.Timer(3.0, lambda: safe_delete(chat_id, msg.message_id)).start()
 
@@ -266,6 +284,13 @@ def process_auto_credentials(message):
             conn.close()
 
             msg = bot.send_message(chat_id, "✅ **Hotmail API Detected & Setup Completed!**", parse_mode="Markdown")
+            
+            if chat_id in active_menu_messages:
+                try:
+                    bot.delete_message(chat_id, active_menu_messages[chat_id])
+                except:
+                    pass
+
             fetch_and_send_emails(chat_id)
             threading.Timer(3.0, lambda: safe_delete(chat_id, msg.message_id)).start()
         else:
@@ -434,10 +459,13 @@ def fetch_and_send_emails(chat_id, edit_message_id=None):
         if edit_message_id:
             try:
                 bot.edit_message_text(chat_id=chat_id, message_id=edit_message_id, text=response_text, parse_mode="Markdown", reply_markup=markup)
+                active_menu_messages[chat_id] = edit_message_id
             except Exception:
-                bot.send_message(chat_id, response_text, parse_mode="Markdown", reply_markup=markup)
+                sent_msg = bot.send_message(chat_id, response_text, parse_mode="Markdown", reply_markup=markup)
+                active_menu_messages[chat_id] = sent_msg.message_id
         else:
-            bot.send_message(chat_id, response_text, parse_mode="Markdown", reply_markup=markup)
+            sent_msg = bot.send_message(chat_id, response_text, parse_mode="Markdown", reply_markup=markup)
+            active_menu_messages[chat_id] = sent_msg.message_id
 
     except Exception as e:
         if edit_message_id:
