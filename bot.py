@@ -10,7 +10,7 @@ from datetime import datetime
 import re
 import html
 import os
-from flask import Flask
+from flask import Flask, send_from_directory
 import threading
 import time
 
@@ -30,6 +30,11 @@ app = Flask(__name__)
 def home():
     return "Bot Server is Running!"
 
+# Route to serve black/transparent PNG logo in Web App
+@app.route('/logo.png')
+def serve_logo():
+    return send_from_directory('.', 'logo.png')
+
 @app.route('/mail/<int:chat_id>/<int:idx>')
 def view_mail(chat_id, idx):
     try:
@@ -40,7 +45,24 @@ def view_mail(chat_id, idx):
         conn.close()
         
         if row and row[0]:
-            return row[0]
+            styled_content = f"""
+            <html>
+            <head>
+                <style>
+                    body {{ background-color: #121212; color: #e0e0e0; font-family: Arial, sans-serif; padding: 20px; }}
+                    .header {{ text-align: center; margin-bottom: 20px; padding-bottom: 10px; border-bottom: 1px solid #333; }}
+                    .header img {{ width: 60px; height: 60px; object-fit: contain; }}
+                </style>
+            </head>
+            <body>
+                <div class="header">
+                    <img src="/logo.png" alt="Logo">
+                </div>
+                {row[0]}
+            </body>
+            </html>
+            """
+            return styled_content
         else:
             return "<h3>⚠️ Mail session expired or not found. Please go back to the bot, click 'Refresh', and try opening the mail again.</h3>"
     except Exception as e:
@@ -78,7 +100,6 @@ def init_db():
     conn.close()
 
 init_db()
-user_states = {}
 
 # --- Background Task to Clean Data Every 10 Minutes ---
 def auto_cleanup_task():
@@ -116,14 +137,13 @@ def get_html_body(msg):
         return msg.get_payload(decode=True).decode(errors='ignore')
     return "No HTML Content Found."
 
-# --- Get User Language Helper ---
 def get_user_lang(chat_id):
     conn = sqlite3.connect('mail_bot.db', check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute("SELECT language FROM users WHERE user_id=?", (chat_id,))
     row = cursor.fetchone()
     conn.close()
-    return row[0] if row and row[0] else None
+    return row[0] if row and row[0] else 'en'
 
 # --- Main Menu / Start ---
 @bot.message_handler(commands=['start', 'menu'])
@@ -137,10 +157,18 @@ def send_welcome(message):
     lang = get_user_lang(chat_id)
     
     # If language not set, ask for language first
-    if not lang:
+    if not lang or lang == 'en' and not has_user_record(chat_id):
         show_language_menu(chat_id)
     else:
-        show_main_menu(chat_id)
+        show_main_instruction(chat_id)
+
+def has_user_record(chat_id):
+    conn = sqlite3.connect('mail_bot.db', check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_id FROM users WHERE user_id=?", (chat_id,))
+    row = cursor.fetchone()
+    conn.close()
+    return row is not None
 
 def show_language_menu(chat_id):
     markup = types.InlineKeyboardMarkup(row_width=2)
@@ -152,31 +180,32 @@ def show_language_menu(chat_id):
     )
     bot.send_message(
         chat_id,
-        "🌐 **Please select your language / भाषा चुनें / ជ្រើសរើសភាសា / ভাষা সিলেক্ট করুন:**",
+        "🌐 **Please select your language:**",
         parse_mode="Markdown",
         reply_markup=markup
     )
 
-def show_main_menu(chat_id):
-    markup = types.InlineKeyboardMarkup(row_width=1)
-    btn_zoho = types.InlineKeyboardButton("🏢 Zoho Mail Reader", callback_data="provider_zoho")
-    btn_hotmail = types.InlineKeyboardButton("🔥 Hotmail Reader (API)", callback_data="provider_hotmail")
-    btn_lang = types.InlineKeyboardButton("🌐 Change Language", callback_data="action_changelang")
-    markup.add(btn_zoho, btn_hotmail, btn_lang)
+def show_main_instruction(chat_id):
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("🌐 Change Language", callback_data="action_changelang"))
     
-    bot.send_message(
-        chat_id, 
-        "👋 **Welcome to Mail Reader Bot!**\n\nPlease select your email provider:", 
-        parse_mode="Markdown",
-        reply_markup=markup
+    instruction_text = (
+        "🤖 **Auto Mail Reader Bot Ready!**\n\n"
+        "Just send your mail credentials directly in chat:\n\n"
+        "🏢 **For Zoho:** `email@zohomail.com|AppPassword`\n"
+        "🔥 **For Hotmail:** `email|password|refresh_token|client_id`\n\n"
+        "The bot will automatically detect the provider and fetch your inbox!"
     )
+    bot.send_message(chat_id, instruction_text, parse_mode="Markdown", reply_markup=markup)
+    # Register next step handler so any text message is automatically captured as credentials
+    bot.register_next_step_handler_by_chat_id(chat_id, process_auto_credentials)
 
 # --- Callback Handlers ---
 @bot.callback_query_handler(func=lambda call: True)
 def handle_query(call):
     chat_id = call.message.chat.id
     
-    if call.data.startswith("lang__") or call.data.startswith("lang_"):
+    if call.data.startswith("lang_"):
         lang = call.data.split("_")[1]
         conn = sqlite3.connect('mail_bot.db', check_same_thread=False)
         cursor = conn.cursor()
@@ -191,7 +220,7 @@ def handle_query(call):
             bot.delete_message(chat_id, call.message.message_id)
         except:
             pass
-        show_main_menu(chat_id)
+        show_main_instruction(chat_id)
 
     elif call.data == "action_changelang":
         try:
@@ -200,39 +229,30 @@ def handle_query(call):
             pass
         show_language_menu(chat_id)
 
-    elif call.data.startswith("provider_"):
-        provider = call.data.split("_")[1]
-        user_states[chat_id] = provider
-        
-        if provider == 'zoho':
-            text_zoho = "🏢 **Zoho Mail Setup**\n\nSend details in this format:\n`email@zohomail.com|AppPassword`"
-            bot.edit_message_text(chat_id=chat_id, message_id=call.message.message_id, text=text_zoho, parse_mode="Markdown")
-            bot.register_next_step_handler(call.message, process_zoho)
-            
-        elif provider == 'hotmail':
-            text_hotmail = "🔥 **Hotmail API Setup**\n\nSend details in this format:\n`email|password|refresh_token|client_id`"
-            bot.edit_message_text(chat_id=chat_id, message_id=call.message.message_id, text=text_hotmail, parse_mode="Markdown")
-            bot.register_next_step_handler(call.message, process_hotmail)
-
     elif call.data == "action_refresh":
         bot.answer_callback_query(call.id, "Refreshing Inbox...")
         fetch_and_send_emails(chat_id, edit_message_id=call.message.message_id)
         
     elif call.data == "action_new_email":
-        show_main_menu(chat_id)
+        try:
+            bot.delete_message(chat_id, call.message.message_id)
+        except:
+            pass
+        show_main_instruction(chat_id)
             
     elif call.data == "action_menu":
         try:
-            bot.delete_message(chat_id=chat_id, message_id=call.message.message_id)
+            bot.delete_message(chat_id, call.message.message_id)
         except:
             pass
-        show_main_menu(chat_id)
+        show_main_instruction(chat_id)
 
-# --- Process Credentials with Auto Delete ---
-def process_zoho(message):
+# --- Auto Detect and Process Credentials ---
+def process_auto_credentials(message):
     chat_id = message.chat.id
     text = message.text.strip()
     
+    # Delete user input message for privacy
     try:
         bot.delete_message(chat_id, message.message_id)
     except:
@@ -240,57 +260,46 @@ def process_zoho(message):
 
     try:
         parts = [p.strip() for p in text.split('|')]
-        if len(parts) < 2:
-            raise ValueError("Invalid format")
-        email_address, app_password = parts[0], parts[1]
-
-        conn = sqlite3.connect('mail_bot.db', check_same_thread=False)
-        cursor = conn.cursor()
-        cursor.execute("UPDATE users SET email=?, password=?, provider=?, refresh_token=NULL, client_id=NULL WHERE user_id=?", (email_address, app_password, 'zoho', chat_id))
-        if cursor.rowcount == 0:
-            cursor.execute("INSERT INTO users (user_id, email, password, provider) VALUES (?, ?, ?, ?)", (chat_id, email_address, app_password, 'zoho'))
-        conn.commit()
-        conn.close()
-
-        msg = bot.send_message(chat_id, "✅ **Login Successful!**", parse_mode="Markdown")
-        fetch_and_send_emails(chat_id)
         
-        threading.Timer(3.0, lambda: safe_delete(chat_id, msg.message_id)).start()
+        # Auto-detect provider based on number of parts and email domain
+        if len(parts) == 2 or ("zoho" in parts[0].lower()):
+            # Zoho Mail
+            email_address, app_password = parts[0], parts[1]
+            conn = sqlite3.connect('mail_bot.db', check_same_thread=False)
+            cursor = conn.cursor()
+            cursor.execute("UPDATE users SET email=?, password=?, provider=?, refresh_token=NULL, client_id=NULL WHERE user_id=?", (email_address, app_password, 'zoho', chat_id))
+            if cursor.rowcount == 0:
+                cursor.execute("INSERT INTO users (user_id, email, password, provider) VALUES (?, ?, ?, ?)", (chat_id, email_address, app_password, 'zoho'))
+            conn.commit()
+            conn.close()
+
+            msg = bot.send_message(chat_id, "✅ **Zoho Mail Detected & Login Successful!**", parse_mode="Markdown")
+            fetch_and_send_emails(chat_id)
+            threading.Timer(3.0, lambda: safe_delete(chat_id, msg.message_id)).start()
+
+        elif len(parts) >= 4:
+            # Hotmail API
+            email_address, password, refresh_token, client_id = parts[0], parts[1], parts[2], parts[3]
+            conn = sqlite3.connect('mail_bot.db', check_same_thread=False)
+            cursor = conn.cursor()
+            cursor.execute("UPDATE users SET email=?, password=?, provider=?, refresh_token=?, client_id=? WHERE user_id=?", (email_address, password, 'hotmail', refresh_token, client_id, chat_id))
+            if cursor.rowcount == 0:
+                cursor.execute("INSERT INTO users (user_id, email, password, provider, refresh_token, client_id) VALUES (?, ?, ?, ?, ?, ?)", (chat_id, email_address, password, 'hotmail', refresh_token, client_id))
+            conn.commit()
+            conn.close()
+
+            msg = bot.send_message(chat_id, "✅ **Hotmail API Detected & Setup Completed!**", parse_mode="Markdown")
+            fetch_and_send_emails(chat_id)
+            threading.Timer(3.0, lambda: safe_delete(chat_id, msg.message_id)).start()
+        else:
+            raise ValueError("Unknown format")
+
+        # Keep listening for future input if needed
+        bot.register_next_step_handler_by_chat_id(chat_id, process_auto_credentials)
+
     except Exception:
-        err_msg = bot.send_message(chat_id, "❌ **Invalid Format!** Use: `email@zohomail.com|AppPassword`", parse_mode="Markdown")
-        bot.register_next_step_handler(message, process_zoho)
-        threading.Timer(5.0, lambda: safe_delete(chat_id, err_msg.message_id)).start()
-
-def process_hotmail(message):
-    chat_id = message.chat.id
-    text = message.text.strip()
-    
-    try:
-        bot.delete_message(chat_id, message.message_id)
-    except:
-        pass
-
-    try:
-        parts = [p.strip() for p in text.split('|')]
-        if len(parts) < 4:
-            raise ValueError("Invalid format")
-        email_address, password, refresh_token, client_id = parts[0], parts[1], parts[2], parts[3]
-
-        conn = sqlite3.connect('mail_bot.db', check_same_thread=False)
-        cursor = conn.cursor()
-        cursor.execute("UPDATE users SET email=?, password=?, provider=?, refresh_token=?, client_id=? WHERE user_id=?", (email_address, password, 'hotmail', refresh_token, client_id, chat_id))
-        if cursor.rowcount == 0:
-            cursor.execute("INSERT INTO users (user_id, email, password, provider, refresh_token, client_id) VALUES (?, ?, ?, ?, ?, ?)", (chat_id, email_address, password, 'hotmail', refresh_token, client_id))
-        conn.commit()
-        conn.close()
-
-        msg = bot.send_message(chat_id, "✅ **Setup Completed!**", parse_mode="Markdown")
-        fetch_and_send_emails(chat_id)
-        
-        threading.Timer(3.0, lambda: safe_delete(chat_id, msg.message_id)).start()
-    except Exception:
-        err_msg = bot.send_message(chat_id, "❌ **Invalid Format!** Use: `email|password|refresh_token|client_id`", parse_mode="Markdown")
-        bot.register_next_step_handler(message, process_hotmail)
+        err_msg = bot.send_message(chat_id, "❌ **Invalid Format!**\nSend Zoho: `email@zohomail.com|AppPassword`\nSend Hotmail: `email|password|refresh_token|client_id`", parse_mode="Markdown")
+        bot.register_next_step_handler_by_chat_id(chat_id, process_auto_credentials)
         threading.Timer(5.0, lambda: safe_delete(chat_id, err_msg.message_id)).start()
 
 def safe_delete(chat_id, message_id):
@@ -308,7 +317,7 @@ def fetch_and_send_emails(chat_id, edit_message_id=None):
     conn.close()
 
     if not result:
-        show_main_menu(chat_id)
+        show_main_instruction(chat_id)
         return
 
     email_address, password, provider, refresh_token, client_id = result
