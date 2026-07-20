@@ -112,7 +112,7 @@ def send_welcome(message):
     
     show_main_instruction(message.chat.id)
 
-def show_main_instruction(chat_id):
+def show_main_instruction(chat_id, message_id=None):
     markup = types.InlineKeyboardMarkup(row_width=2)
     markup.add(
         types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"),
@@ -128,7 +128,15 @@ def show_main_instruction(chat_id):
         "🔥 **For Hotmail:** `email|password|refresh_token|client_id`\n\n"
         "⚠️ *All data and opened emails automatically delete after 10 minutes for safety.*"
     )
-    bot.send_message(chat_id, instruction_text, parse_mode="Markdown", reply_markup=markup)
+    
+    if message_id:
+        try:
+            bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=instruction_text, parse_mode="Markdown", reply_markup=markup)
+        except:
+            bot.send_message(chat_id, instruction_text, parse_mode="Markdown", reply_markup=markup)
+    else:
+        bot.send_message(chat_id, instruction_text, parse_mode="Markdown", reply_markup=markup)
+        
     bot.register_next_step_handler_by_chat_id(chat_id, process_auto_credentials)
 
 # --- Callback Handlers ---
@@ -138,11 +146,7 @@ def handle_query(call):
     
     if call.data == "action_menu":
         bot.answer_callback_query(call.id, "Welcome to Main Menu")
-        try:
-            bot.delete_message(chat_id, call.message.message_id)
-        except:
-            pass
-        show_main_instruction(chat_id)
+        show_main_instruction(chat_id, message_id=call.message.message_id)
 
     elif call.data == "action_help":
         bot.answer_callback_query(call.id, "Help Guide")
@@ -185,11 +189,7 @@ def handle_query(call):
         bot.answer_callback_query(call.id)
         
     elif call.data == "action_new_email":
-        try:
-            bot.delete_message(chat_id, call.message.message_id)
-        except:
-            pass
-        show_main_instruction(chat_id)
+        show_main_instruction(chat_id, message_id=call.message.message_id)
 
 # --- Auto Detect and Process Credentials ---
 def process_auto_credentials(message):
