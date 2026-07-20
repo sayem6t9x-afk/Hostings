@@ -12,6 +12,7 @@ import html
 import os
 import threading
 import time
+from flask import Flask
 
 # --- Setup Logging ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -22,6 +23,17 @@ bot = telebot.TeleBot(BOT_TOKEN)
 
 # To keep track of user's currently open mail message ID for auto-removal
 active_mail_messages = {}
+
+# --- Flask Server to Bind Port for Render Web Service ---
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Mail Bot is Running Successfully!"
+
+def run_flask():
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host='0.0.0.0', port=port)
 
 # --- Database Setup ---
 def init_db():
@@ -35,7 +47,6 @@ def init_db():
             provider TEXT,
             refresh_token TEXT,
             client_id TEXT,
-            language TEXT DEFAULT 'en',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
@@ -91,14 +102,6 @@ def get_html_body(msg):
         return msg.get_payload(decode=True).decode(errors='ignore')
     return "No HTML Content Found."
 
-def get_user_lang(chat_id):
-    conn = sqlite3.connect('mail_bot.db', check_same_thread=False)
-    cursor = conn.cursor()
-    cursor.execute("SELECT language FROM users WHERE user_id=?", (chat_id,))
-    row = cursor.fetchone()
-    conn.close()
-    return row[0] if row and row[0] else None
-
 # --- Main Menu / Start ---
 @bot.message_handler(commands=['start', 'menu'])
 def send_welcome(message):
@@ -107,39 +110,23 @@ def send_welcome(message):
     except:
         pass
     
-    chat_id = message.chat.id
-    lang = get_user_lang(chat_id)
-    
-    if not lang:
-        show_language_menu(chat_id)
-    else:
-        show_main_instruction(chat_id)
-
-def show_language_menu(chat_id):
-    markup = types.InlineKeyboardMarkup(row_width=2)
-    markup.add(
-        types.InlineKeyboardButton("🇬🇧 English", callback_data="lang_en"),
-        types.InlineKeyboardButton("🇮🇳 हिन्दी", callback_data="lang_hi"),
-        types.InlineKeyboardButton("🇰🇭 ភាសាខ្មែរ", callback_data="lang_km"),
-        types.InlineKeyboardButton("🇧🇩 বাংলা", callback_data="lang_bn")
-    )
-    bot.send_message(
-        chat_id,
-        "🌐 **Please select your language / भाषा चुनें / ជ្រើសរើសភាសា / ভাষা সিলেক্ট করুন:**",
-        parse_mode="Markdown",
-        reply_markup=markup
-    )
+    show_main_instruction(message.chat.id)
 
 def show_main_instruction(chat_id):
-    markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton("🌐 Change Language", callback_data="action_changelang"))
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"),
+        types.InlineKeyboardButton("❓ Help & Format", callback_data="action_help"),
+        types.InlineKeyboardButton("ℹ️ About Bot", callback_data="action_about"),
+        types.InlineKeyboardButton("🔄 Refresh Inbox", callback_data="action_refresh_direct")
+    )
     
     instruction_text = (
-        "🤖 **Auto Mail Reader Bot Ready!**\n\n"
-        "Just send your mail credentials directly in chat:\n\n"
+        "🤖 **Auto Secure Mail Reader Bot**\n\n"
+        "Send your mail credentials directly in chat to load your inbox:\n\n"
         "🏢 **For Zoho:** `email@zohomail.com|AppPassword`\n"
         "🔥 **For Hotmail:** `email|password|refresh_token|client_id`\n\n"
-        "The bot will automatically detect the provider and fetch your inbox!"
+        "⚠️ *All data and opened emails automatically delete after 10 minutes for safety.*"
     )
     bot.send_message(chat_id, instruction_text, parse_mode="Markdown", reply_markup=markup)
     bot.register_next_step_handler_by_chat_id(chat_id, process_auto_credentials)
@@ -149,33 +136,46 @@ def show_main_instruction(chat_id):
 def handle_query(call):
     chat_id = call.message.chat.id
     
-    if call.data.startswith("lang_"):
-        lang = call.data.split("_")[1]
-        conn = sqlite3.connect('mail_bot.db', check_same_thread=False)
-        cursor = conn.cursor()
-        cursor.execute("SELECT user_id FROM users WHERE user_id=?", (chat_id,))
-        if cursor.fetchone():
-            cursor.execute("UPDATE users SET language=? WHERE user_id=?", (lang, chat_id))
-        else:
-            cursor.execute("INSERT INTO users (user_id, language) VALUES (?, ?)", (chat_id, lang))
-        conn.commit()
-        conn.close()
-        
-        bot.answer_callback_query(call.id, "Language changed successfully!")
+    if call.data == "action_menu":
+        bot.answer_callback_query(call.id, "Welcome to Main Menu")
         try:
             bot.delete_message(chat_id, call.message.message_id)
         except:
             pass
         show_main_instruction(chat_id)
 
-    elif call.data == "action_changelang":
+    elif call.data == "action_help":
+        bot.answer_callback_query(call.id, "Help Guide")
+        help_text = (
+            "📖 **Bot Usage Guide:**\n\n"
+            "1. Send your credentials in the exact specified format.\n"
+            "2. Click on any `📖 Read Mail` button to check content directly.\n"
+            "3. Opening a new mail will instantly remove the previous one.\n"
+            "4. Everything wipes out automatically every 10 minutes."
+        )
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("🔙 Back to Menu", callback_data="action_menu"))
         try:
-            bot.delete_message(chat_id, call.message.message_id)
+            bot.edit_message_text(chat_id=chat_id, message_id=call.message.message_id, text=help_text, parse_mode="Markdown", reply_markup=markup)
         except:
-            pass
-        show_language_menu(chat_id)
+            bot.send_message(chat_id, help_text, parse_mode="Markdown", reply_markup=markup)
 
-    elif call.data == "action_refresh":
+    elif call.data == "action_about":
+        bot.answer_callback_query(call.id, "About Bot")
+        about_text = (
+            "ℹ️ **About Secure Mail Bot:**\n\n"
+            "• Direct Chat Telegram Email Reader\n"
+            "• Built-in Auto-Deletion and Anti-Leak Security\n"
+            "• Supports Zoho and Hotmail (Outlook) APIs"
+        )
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("🔙 Back to Menu", callback_data="action_menu"))
+        try:
+            bot.edit_message_text(chat_id=chat_id, message_id=call.message.message_id, text=about_text, parse_mode="Markdown", reply_markup=markup)
+        except:
+            bot.send_message(chat_id, about_text, parse_mode="Markdown", reply_markup=markup)
+
+    elif call.data == "action_refresh" or call.data == "action_refresh_direct":
         bot.answer_callback_query(call.id, "Refreshing Inbox...")
         fetch_and_send_emails(chat_id, edit_message_id=call.message.message_id)
         
@@ -185,13 +185,6 @@ def handle_query(call):
         bot.answer_callback_query(call.id)
         
     elif call.data == "action_new_email":
-        try:
-            bot.delete_message(chat_id, call.message.message_id)
-        except:
-            pass
-        show_main_instruction(chat_id)
-            
-    elif call.data == "action_menu":
         try:
             bot.delete_message(chat_id, call.message.message_id)
         except:
@@ -397,7 +390,7 @@ def fetch_and_send_emails(chat_id, edit_message_id=None):
             markup.row(*mail_buttons[i:i+2])
 
         markup.row(types.InlineKeyboardButton("🔄 Refresh", callback_data="action_refresh"), types.InlineKeyboardButton("➕ New Email", callback_data="action_new_email"))
-        markup.row(types.InlineKeyboardButton("🔙 Back to Menu", callback_data="action_menu"))
+        markup.row(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
 
         if edit_message_id:
             bot.edit_message_text(chat_id=chat_id, message_id=edit_message_id, text=response_text, parse_mode="Markdown", reply_markup=markup)
@@ -407,13 +400,15 @@ def fetch_and_send_emails(chat_id, edit_message_id=None):
     except Exception as e:
         bot.send_message(chat_id, "⚠️ Error reading data.")
 
-# --- Run Telegram Bot and Background Cleanup Together ---
+# --- Run Flask Server, Background Cleanup, and Telegram Bot Together ---
 if __name__ == "__main__":
+    flask_thread = threading.Thread(target=run_flask, daemon=True)
+    flask_thread.start()
+    
     cleanup_thread = threading.Thread(target=auto_cleanup_task, daemon=True)
     cleanup_thread.start()
     
-    # Clears any existing webhook conflicts automatically on startup
     bot.remove_webhook()
     
-    logging.info("Bot and Auto-Cleanup are starting...")
+    logging.info("Bot, Flask Server, and Auto-Cleanup are starting...")
     bot.infinity_polling(skip_pending=True)
