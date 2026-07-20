@@ -42,7 +42,7 @@ def view_mail(chat_id, idx):
         if row and row[0]:
             return row[0]
         else:
-            return "<h3>Error: Email not found or session expired. Please refresh the bot and start again.</h3>"
+            return "<h3>⚠️ Mail session expired or not found. Please go back to the bot, click 'Refresh', and try opening the mail again.</h3>"
     except Exception as e:
         return f"<h3>Error loading email: {str(e)}</h3>"
 
@@ -130,9 +130,14 @@ def show_main_menu(chat_id):
     btn_hotmail = types.InlineKeyboardButton("🔥 Hotmail Reader (API)", callback_data="provider_hotmail")
     markup.add(btn_zoho, btn_hotmail)
     
+    welcome_text = (
+        "👋 **Welcome / स्वागत है / ស្វាគមន៍ / স্বাগতম!**\n\n"
+        "🌐 **Select your email provider / अपना प्रदाता चुनें / ជ្រើសរើសប្រភពអ៊ីមែល / ইমেইল প্রোভাইডার সিলেক্ট করুন:**"
+    )
+    
     bot.send_message(
         chat_id, 
-        "👋 **Welcome to Pro Mail Reader Bot!**\n\nদয়া করে আপনার ইমেইল প্রোভাইডার সিলেক্ট করুন:", 
+        welcome_text, 
         parse_mode="Markdown",
         reply_markup=markup
     )
@@ -147,15 +152,29 @@ def handle_query(call):
         user_states[chat_id] = provider
         
         if provider == 'zoho':
-            bot.edit_message_text(chat_id=chat_id, message_id=call.message.message_id, text="Zoho Mail 🏢 - আপনার ডিটেইলস দিন:\n`email@zoho.com|AppPassword`", parse_mode="Markdown")
+            text_zoho = (
+                "🏢 **Zoho Mail Setup**\n\n"
+                "🇬🇧 Send details: `email@zohomail.com|AppPassword`\n"
+                "🇮🇳 विवरण भेजें: `email@zohomail.com|AppPassword`\n"
+                "🇰🇭 ផ្ញើព័ត៌មានលម្អិត៖ `email@zohomail.com|AppPassword`\n"
+                "🇧🇩 ডিটেইলস দিন: `email@zohomail.com|AppPassword`"
+            )
+            bot.edit_message_text(chat_id=chat_id, message_id=call.message.message_id, text=text_zoho, parse_mode="Markdown")
             bot.register_next_step_handler(call.message, process_zoho)
             
         elif provider == 'hotmail':
-            bot.edit_message_text(chat_id=chat_id, message_id=call.message.message_id, text="Hotmail 🔥 - আপনার ডিটেইলস দিন:\n`email|password|refresh_token|client_id`", parse_mode="Markdown")
+            text_hotmail = (
+                "🔥 **Hotmail API Setup**\n\n"
+                "🇬🇧 Send details: `email|password|refresh_token|client_id`\n"
+                "🇮🇳 विवरण भेजें: `email|password|refresh_token|client_id`\n"
+                "🇰🇭 ផ្ញើព័ត៌មានលម្អិត៖ `email|password|refresh_token|client_id`\n"
+                "🇧🇩 ডিটেইলস দিন: `email|password|refresh_token|client_id`"
+            )
+            bot.edit_message_text(chat_id=chat_id, message_id=call.message.message_id, text=text_hotmail, parse_mode="Markdown")
             bot.register_next_step_handler(call.message, process_hotmail)
 
     elif call.data == "action_refresh":
-        bot.answer_callback_query(call.id, "Refreshing Inbox...")
+        bot.answer_callback_query(call.id, "Refreshing / रिफ्रेश हो रहा है / កំពុងផ្ទុកឡើងវិញ / রিফ্রেশ হচ্ছে...")
         fetch_and_send_emails(chat_id, edit_message_id=call.message.message_id)
         
     elif call.data == "action_new_email":
@@ -173,7 +192,6 @@ def process_zoho(message):
     chat_id = message.chat.id
     text = message.text.strip()
     
-    # User er pathano message delete kora jate privacy thake
     try:
         bot.delete_message(chat_id, message.message_id)
     except:
@@ -191,13 +209,12 @@ def process_zoho(message):
         conn.commit()
         conn.close()
 
-        msg = bot.send_message(chat_id, "✅ **লগইন সফল!**", parse_mode="Markdown")
+        msg = bot.send_message(chat_id, "✅ **Success / सफलता / ជោគជ័យ / সফল!**", parse_mode="Markdown")
         fetch_and_send_emails(chat_id)
         
-        # Success message auto delete after 3 seconds
         threading.Timer(3.0, lambda: safe_delete(chat_id, msg.message_id)).start()
     except Exception:
-        err_msg = bot.send_message(chat_id, "❌ **ভুল ফরম্যাট!** সঠিক ফরম্যাটে দিন: `email@zoho.com|AppPassword`", parse_mode="Markdown")
+        err_msg = bot.send_message(chat_id, "❌ **Error! Format:** `email@zohomail.com|AppPassword`", parse_mode="Markdown")
         bot.register_next_step_handler(message, process_zoho)
         threading.Timer(5.0, lambda: safe_delete(chat_id, err_msg.message_id)).start()
 
@@ -205,7 +222,6 @@ def process_hotmail(message):
     chat_id = message.chat.id
     text = message.text.strip()
     
-    # User er pathano message delete kora
     try:
         bot.delete_message(chat_id, message.message_id)
     except:
@@ -223,13 +239,12 @@ def process_hotmail(message):
         conn.commit()
         conn.close()
 
-        msg = bot.send_message(chat_id, "✅ **সেটআপ সম্পন্ন!**", parse_mode="Markdown")
+        msg = bot.send_message(chat_id, "✅ **Success / सफलता / ជោគជ័យ / সফল!**", parse_mode="Markdown")
         fetch_and_send_emails(chat_id)
         
-        # Success message auto delete after 3 seconds
         threading.Timer(3.0, lambda: safe_delete(chat_id, msg.message_id)).start()
     except Exception:
-        err_msg = bot.send_message(chat_id, "❌ **ভুল ফরম্যাট!** সঠিক ফরম্যাটে দিন: `email|password|refresh_token|client_id`", parse_mode="Markdown")
+        err_msg = bot.send_message(chat_id, "❌ **Error! Format:** `email|password|refresh_token|client_id`", parse_mode="Markdown")
         bot.register_next_step_handler(message, process_hotmail)
         threading.Timer(5.0, lambda: safe_delete(chat_id, err_msg.message_id)).start()
 
@@ -265,9 +280,9 @@ def fetch_and_send_emails(chat_id, edit_message_id=None):
             email_ids = messages[0].split()
 
             if not email_ids:
-                response_text = f"📭 **{email_address}** এর ইনবক্স ফাঁকা।"
+                response_text = f"📭 **{email_address}** Inbox is empty / इनबॉक्स खाली है / ប្រអប់សារទទេ / ইনবক্স ফাঁকা।"
             else:
-                response_text = f"📨 **সর্বশেষ ইমেইল ({email_address}):**\n\n"
+                response_text = f"📨 **Latest Emails ({email_address}):**\n\n"
                 for e_id in reversed(email_ids[-3:]):
                     status, msg_data = mail.fetch(e_id, "(RFC822)")
                     for response_part in msg_data:
@@ -283,7 +298,7 @@ def fetch_and_send_emails(chat_id, edit_message_id=None):
                             response_text += f"🔹 **From:** {from_}\n📌 **Subject:** {subject}\n━━━━━━━━━━━━━━━━━━━\n"
             mail.logout()
 
-        # ================= HOTMAIL YSHShop API LOGIC =================
+        # ================= HOTMAIL API LOGIC =================
         elif provider == 'hotmail':
             url = "https://api-tools.yshshopmails.shop/api/v1/public/outlook/read_inbox"
             payload = {"data": f"{email_address}|{password}|{refresh_token}|{client_id}"}
@@ -293,16 +308,16 @@ def fetch_and_send_emails(chat_id, edit_message_id=None):
             if response.status_code == 200 and response.json().get("success"):
                 emails = response.json().get("data", [])
                 if not emails:
-                    response_text = f"📭 **{email_address}** এর ইনবক্স ফাঁকা।"
+                    response_text = f"📭 **{email_address}** Inbox is empty / इनबॉक्स खाली है / ប្រអប់សារទទេ / ইনবক্স ফাঁকা।"
                 else:
-                    response_text = f"📨 **আপনার ইনবক্স ({email_address}):**\n\n"
+                    response_text = f"📨 **Inbox ({email_address}):**\n\n"
                     for msg in emails[:3]:
                         fetched_htmls.append(msg.get("message", "No Content"))
                         subject = msg.get("subject", "No Subject")
                         clean_body = clean_html_tags(msg.get("message", ""))[:150] + "..."
                         response_text += f"📌 **Subject:** {subject}\n📝 **Message:** {clean_body}\n━━━━━━━━━━━━━━━━━━━\n"
             else:
-                response_text = "❌ **API Error:** ডেটা লোড করা যায়নি।"
+                response_text = "❌ **API Error:** Could not load data / डेटा लोड नहीं हो सका / មិនអាចទាញយកទិន្នន័យ / ডেটা লোড করা যায়নি।"
 
         # Save HTMLs to Database Cache
         conn = sqlite3.connect('mail_bot.db', check_same_thread=False)
@@ -314,7 +329,7 @@ def fetch_and_send_emails(chat_id, edit_message_id=None):
         conn.close()
 
         current_time = datetime.now().strftime("%I:%M:%S %p")
-        response_text += f"\n🕒 *সর্বশেষ রিফ্রেশ:* {current_time}"
+        response_text += f"\n🕒 *Last Refresh / आखिरी रीफ्रेश / ពេលធ្វើបច្ចុប្បន្នភាពចុងក្រោយ / সর্বশেষ রিফ্রেশ:* {current_time}"
         
         # Setup Web App Buttons
         markup = types.InlineKeyboardMarkup()
@@ -335,7 +350,7 @@ def fetch_and_send_emails(chat_id, edit_message_id=None):
             bot.send_message(chat_id, response_text, parse_mode="Markdown", reply_markup=markup)
 
     except Exception as e:
-        bot.send_message(chat_id, "⚠️ ডেটা রিড করতে সমস্যা হচ্ছে।")
+        bot.send_message(chat_id, "⚠️ Error reading data / डेटा पढ़ने में त्रुटि / កំហុសในการអានទិន្នន័យ / ডেটা পড়তে সমস্যা হচ্ছে।")
 
 # --- Run Flask, Telegram Bot and Background Cleanup Together ---
 if __name__ == "__main__":
