@@ -65,7 +65,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Mail Bot is Running Successfully! Premium Version V3.4"
+    return "Mail Bot is Running Successfully! Premium Version V3.5 (Multi-Endpoint Order Fixed)"
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -446,7 +446,7 @@ def handle_query(call):
             bot.answer_callback_query(call.id, "⚠️ Account not found! It may have been processed.", show_alert=True)
             handle_query(types.CallbackQuery(call.id, call.from_user, call.data, call.chat_instance, call.message, data="action_bulk_list"))
 
-    # 🛒 STOCK DASHBOARD CLEANUP (Removed Price N/A)
+    # 🛒 STOCK DASHBOARD
     elif call.data == "action_check_stock":
         try:
             bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="⏳ **Working... Fetching yshshopmails Live Data**", parse_mode="Markdown")
@@ -490,22 +490,41 @@ def handle_query(call):
         markup = types.InlineKeyboardMarkup(row_width=2).add(types.InlineKeyboardButton("✅ Confirm Purchase", callback_data="confirm_buy_gmail"), types.InlineKeyboardButton("🏠 Cancel", callback_data="action_menu"))
         bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="🛒 **Checkout Confirmation (yshshopmails)**\n\nAre you sure you want to deduct balance from your **yshshopmails** account and buy 1 Facebook Gmail?", parse_mode="Markdown", reply_markup=markup)
 
-    # 🛒 FULLY BULLETPROOF BUY SCRIPT
+    # 🛒 MULTI-ENDPOINT FALLBACK BUY SCRIPT
     elif call.data == "confirm_buy_gmail":
         api_key = get_user_settings(chat_id)["api_key"]
         try:
             bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="⏳ **Working... Calling yshshopmails API**", parse_mode="Markdown")
-            raw_resp = requests.get(f"https://facebook.yshshopmails.com/v1/api/create-order.php?key={api_key}", timeout=10)
             
-            try:
-                resp = raw_resp.json()
-            except:
-                resp = {"mail": raw_resp.text.strip(), "order_id": "API_ORDER"}
+            order_urls = [
+                f"https://facebook.yshshopmails.com/v1/api/create-order.php?key={api_key}",
+                f"https://facebook.yshshopmails.com/v1/api/order?key={api_key}",
+                f"https://yshshopmails.com/v1/api/create-order.php?key={api_key}"
+            ]
             
+            resp = None
+            raw_resp = None
+            for url in order_urls:
+                try:
+                    raw_resp = requests.get(url, timeout=10)
+                    data = raw_resp.json()
+                    if isinstance(data, dict) and data.get("status") == "error" and data.get("message") == "error.notFound":
+                        continue
+                    resp = data
+                    break
+                except:
+                    continue
+            
+            if not resp and raw_resp:
+                try: resp = raw_resp.json()
+                except: resp = {"mail": raw_resp.text.strip(), "order_id": "API_ORDER"}
+            elif not resp:
+                resp = {"error": "All order endpoints returned notFound"}
+
             eml = resp.get("mail") or resp.get("email") or resp.get("account") or resp.get("data")
             ord_id = resp.get("order_id") or resp.get("id") or resp.get("order") or "AUTO_ORDER"
             
-            if eml:
+            if eml and "@" in str(eml):
                 with sqlite3.connect('mail_bot.db', check_same_thread=False) as conn:
                     cursor = conn.cursor()
                     cursor.execute("SELECT user_id FROM users WHERE user_id=?", (chat_id,))
@@ -518,7 +537,7 @@ def handle_query(call):
                 fetch_and_send_emails(chat_id, edit_message_id=message_id)
             else:
                 markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
-                bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"❌ **Failed to buy from yshshopmails:** `{raw_resp.text}`", parse_mode="Markdown", reply_markup=markup)
+                bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"❌ **Failed to buy from yshshopmails:** `{resp}`", parse_mode="Markdown", reply_markup=markup)
         except Exception as e:
             markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
             bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"❌ **Connection Error:** {e}", parse_mode="Markdown", reply_markup=markup)
@@ -938,7 +957,7 @@ if __name__ == "__main__":
     cleanup_thread.start()
     
     bot.remove_webhook()
-    logging.info("Premium V3.4 Started! Dashboard cleaned up successfully.")
+    logging.info("Premium V3.5 Started! Multi-endpoint order fallback integrated.")
     
     while True:
         try: bot.infinity_polling(skip_pending=True, interval=1, timeout=20)
