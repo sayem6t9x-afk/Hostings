@@ -38,31 +38,30 @@ def run_flask():
 
 # --- Database Setup ---
 def init_db():
-    conn = sqlite3.connect('mail_bot.db', check_same_thread=False)
-    cursor = conn.cursor()
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
-            email TEXT,
-            password TEXT,
-            provider TEXT,
-            refresh_token TEXT,
-            client_id TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS email_cache (
-            user_id INTEGER,
-            idx INTEGER,
-            subject TEXT,
-            sender TEXT,
-            full_content TEXT,
-            PRIMARY KEY (user_id, idx)
-        )
-    ''')
-    conn.commit()
-    conn.close()
+    with sqlite3.connect('mail_bot.db', check_same_thread=False) as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                user_id INTEGER PRIMARY KEY,
+                email TEXT,
+                password TEXT,
+                provider TEXT,
+                refresh_token TEXT,
+                client_id TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS email_cache (
+                user_id INTEGER,
+                idx INTEGER,
+                subject TEXT,
+                sender TEXT,
+                full_content TEXT,
+                PRIMARY KEY (user_id, idx)
+            )
+        ''')
+        conn.commit()
 
 init_db()
 
@@ -71,12 +70,11 @@ def auto_cleanup_task():
     while True:
         try:
             time.sleep(600) # 10 Minutes
-            conn = sqlite3.connect('mail_bot.db', check_same_thread=False)
-            cursor = conn.cursor()
-            cursor.execute("DELETE FROM users")
-            cursor.execute("DELETE FROM email_cache")
-            conn.commit()
-            conn.close()
+            with sqlite3.connect('mail_bot.db', check_same_thread=False) as conn:
+                cursor = conn.cursor()
+                cursor.execute("DELETE FROM users")
+                cursor.execute("DELETE FROM email_cache")
+                conn.commit()
             active_mail_messages.clear()
             active_menu_messages.clear()
             logging.info("Auto-cleanup executed: Database and active views cleared after 10 minutes.")
@@ -140,7 +138,6 @@ def send_welcome(message):
         bot.delete_message(message.chat.id, message.message_id)
     except:
         pass
-    
     show_main_instruction(message.chat.id)
 
 def show_main_instruction(chat_id, message_id=None):
@@ -161,7 +158,8 @@ def show_main_instruction(chat_id, message_id=None):
     instruction_text = (
         "🤖 **Auto Secure Mail & OTP Reader Bot**\n\n"
         "Send your mail credentials directly in chat to load your inbox:\n\n"
-        "🏢 **For Zoho:** `email@zohomail.com|AppPassword`\n"
+        "🏢 **For Zoho / Zoho+ Alias:** `email@zohomail.com|AppPassword`\n"
+        "🔴 **For Gmail:** `email@gmail.com|AppPassword`\n"
         "🔥 **For Hotmail:** `email|password|refresh_token|client_id`\n\n"
         "⚠️ *All data and opened emails automatically delete after 10 minutes for safety.*"
     )
@@ -212,7 +210,8 @@ def handle_query(call):
             "ℹ️ **About Secure Mail Bot:**\n\n"
             "• Direct Chat Telegram Email & OTP Reader\n"
             "• Smart Auto-Detection for FB, IG, Google & More\n"
-            "• Built-in Auto-Deletion Security"
+            "• Built-in Auto-Deletion Security\n"
+            "• Supports Gmail App Password & Zoho (+) Aliases"
         )
         markup = types.InlineKeyboardMarkup()
         markup.add(types.InlineKeyboardButton("🔙 Back to Menu", callback_data="action_menu"))
@@ -246,19 +245,27 @@ def process_auto_credentials(message):
     try:
         parts = [p.strip() for p in text.split('|')]
         
-        if len(parts) == 2 or ("zoho" in parts[0].lower()):
+        # Support for both Zoho and Gmail (2 parts expected)
+        if len(parts) == 2:
             email_address, app_password = parts[0], parts[1]
-            conn = sqlite3.connect('mail_bot.db', check_same_thread=False)
-            cursor = conn.cursor()
-            cursor.execute("SELECT user_id FROM users WHERE user_id=?", (chat_id,))
-            if cursor.fetchone():
-                cursor.execute("UPDATE users SET email=?, password=?, provider=?, refresh_token=NULL, client_id=NULL WHERE user_id=?", (email_address, app_password, 'zoho', chat_id))
-            else:
-                cursor.execute("INSERT INTO users (user_id, email, password, provider) VALUES (?, ?, ?, ?)", (chat_id, email_address, app_password, 'zoho'))
-            conn.commit()
-            conn.close()
+            
+            # Auto detect provider
+            provider = 'zoho' # default
+            if "gmail" in email_address.lower():
+                provider = 'gmail'
+            elif "zoho" in email_address.lower():
+                provider = 'zoho'
+            
+            with sqlite3.connect('mail_bot.db', check_same_thread=False) as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT user_id FROM users WHERE user_id=?", (chat_id,))
+                if cursor.fetchone():
+                    cursor.execute("UPDATE users SET email=?, password=?, provider=?, refresh_token=NULL, client_id=NULL WHERE user_id=?", (email_address, app_password, provider, chat_id))
+                else:
+                    cursor.execute("INSERT INTO users (user_id, email, password, provider) VALUES (?, ?, ?, ?)", (chat_id, email_address, app_password, provider))
+                conn.commit()
 
-            msg = bot.send_message(chat_id, "✅ **Zoho Mail Detected & Login Successful!**", parse_mode="Markdown")
+            msg = bot.send_message(chat_id, f"✅ **{provider.capitalize()} Mail Detected & Saved!**\nConnecting to Inbox...", parse_mode="Markdown")
             
             if chat_id in active_menu_messages:
                 try:
@@ -269,17 +276,18 @@ def process_auto_credentials(message):
             fetch_and_send_emails(chat_id)
             threading.Timer(3.0, lambda: safe_delete(chat_id, msg.message_id)).start()
 
+        # Support for Hotmail API (4 parts expected)
         elif len(parts) >= 4:
             email_address, password, refresh_token, client_id = parts[0], parts[1], parts[2], parts[3]
-            conn = sqlite3.connect('mail_bot.db', check_same_thread=False)
-            cursor = conn.cursor()
-            cursor.execute("SELECT user_id FROM users WHERE user_id=?", (chat_id,))
-            if cursor.fetchone():
-                cursor.execute("UPDATE users SET email=?, password=?, provider=?, refresh_token=?, client_id=? WHERE user_id=?", (email_address, password, 'hotmail', refresh_token, client_id, chat_id))
-            else:
-                cursor.execute("INSERT INTO users (user_id, email, password, provider, refresh_token, client_id) VALUES (?, ?, ?, ?, ?, ?)", (chat_id, email_address, password, 'hotmail', refresh_token, client_id))
-            conn.commit()
-            conn.close()
+            
+            with sqlite3.connect('mail_bot.db', check_same_thread=False) as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT user_id FROM users WHERE user_id=?", (chat_id,))
+                if cursor.fetchone():
+                    cursor.execute("UPDATE users SET email=?, password=?, provider=?, refresh_token=?, client_id=? WHERE user_id=?", (email_address, password, 'hotmail', refresh_token, client_id, chat_id))
+                else:
+                    cursor.execute("INSERT INTO users (user_id, email, password, provider, refresh_token, client_id) VALUES (?, ?, ?, ?, ?, ?)", (chat_id, email_address, password, 'hotmail', refresh_token, client_id))
+                conn.commit()
 
             msg = bot.send_message(chat_id, "✅ **Hotmail API Detected & Setup Completed!**", parse_mode="Markdown")
             
@@ -297,7 +305,7 @@ def process_auto_credentials(message):
         bot.register_next_step_handler_by_chat_id(chat_id, process_auto_credentials)
 
     except Exception:
-        err_msg = bot.send_message(chat_id, "❌ **Invalid Format!**\nSend Zoho: `email@zohomail.com|AppPassword`\nSend Hotmail: `email|password|refresh_token|client_id`", parse_mode="Markdown")
+        err_msg = bot.send_message(chat_id, "❌ **Invalid Format!**\nSend Zoho/Gmail: `email|AppPassword`\nSend Hotmail: `email|password|token|client_id`", parse_mode="Markdown")
         bot.register_next_step_handler_by_chat_id(chat_id, process_auto_credentials)
         threading.Timer(5.0, lambda: safe_delete(chat_id, err_msg.message_id)).start()
 
@@ -315,11 +323,10 @@ def send_full_mail_to_chat(chat_id, idx):
         except:
             pass
 
-    conn = sqlite3.connect('mail_bot.db', check_same_thread=False)
-    cursor = conn.cursor()
-    cursor.execute("SELECT subject, sender, full_content FROM email_cache WHERE user_id=? AND idx=?", (chat_id, idx))
-    row = cursor.fetchone()
-    conn.close()
+    with sqlite3.connect('mail_bot.db', check_same_thread=False) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT subject, sender, full_content FROM email_cache WHERE user_id=? AND idx=?", (chat_id, idx))
+        row = cursor.fetchone()
     
     if not row:
         bot.send_message(chat_id, "⚠️ Mail session expired. Please refresh the inbox.")
@@ -355,11 +362,10 @@ def send_full_mail_to_chat(chat_id, idx):
 
 # --- Fetch Emails ---
 def fetch_and_send_emails(chat_id, edit_message_id=None):
-    conn = sqlite3.connect('mail_bot.db', check_same_thread=False)
-    cursor = conn.cursor()
-    cursor.execute("SELECT email, password, provider, refresh_token, client_id FROM users WHERE user_id=?", (chat_id,))
-    result = cursor.fetchone()
-    conn.close()
+    with sqlite3.connect('mail_bot.db', check_same_thread=False) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT email, password, provider, refresh_token, client_id FROM users WHERE user_id=?", (chat_id,))
+        result = cursor.fetchone()
 
     if not result:
         show_main_instruction(chat_id, message_id=edit_message_id)
@@ -370,34 +376,40 @@ def fetch_and_send_emails(chat_id, edit_message_id=None):
     cached_emails = []
     
     try:
-        if provider == 'zoho':
-            mail = imaplib.IMAP4_SSL('imap.zoho.com')
-            mail.login(email_address, password)
-            mail.select("inbox")
-            status, messages = mail.search(None, "ALL")
-            email_ids = messages[0].split()
+        if provider in ['zoho', 'gmail']:
+            imap_server = 'imap.gmail.com' if provider == 'gmail' else 'imap.zoho.com'
+            
+            try:
+                mail = imaplib.IMAP4_SSL(imap_server)
+                mail.login(email_address, password)
+                mail.select("inbox")
+                status, messages = mail.search(None, "ALL")
+                email_ids = messages[0].split()
 
-            if not email_ids:
-                response_text = f"📭 **{email_address}** Inbox is empty."
-            else:
-                response_text = f"📨 **Latest Inbox ({email_address}):**\n\n"
-                for e_id in reversed(email_ids[-3:]):
-                    status, msg_data = mail.fetch(e_id, "(RFC822)")
-                    for response_part in msg_data:
-                        if isinstance(response_part, tuple):
-                            msg = email.message_from_bytes(response_part[1])
-                            raw_html = get_html_body(msg)
-                            
-                            subject, encoding = decode_header(msg["Subject"])[0]
-                            if isinstance(subject, bytes):
-                                subject = subject.decode(encoding if encoding else "utf-8", errors="ignore")
-                            from_ = msg.get("From", "Unknown")
-                            
-                            cached_emails.append((subject, from_, raw_html))
-                            clean_b = clean_html_tags(raw_html)
-                            lbl, code = detect_otp_type(subject, clean_b)
-                            response_text += f"🔹 **[{lbl}]** Code: `{code}`\n📌 **Subject:** {subject}\n━━━━━━━━━━━━━━━━━━━\n"
-            mail.logout()
+                if not email_ids:
+                    response_text = f"📭 **{email_address}** Inbox is empty."
+                else:
+                    response_text = f"📨 **Latest Inbox ({email_address}):**\n\n"
+                    for e_id in reversed(email_ids[-3:]):
+                        status, msg_data = mail.fetch(e_id, "(RFC822)")
+                        for response_part in msg_data:
+                            if isinstance(response_part, tuple):
+                                msg = email.message_from_bytes(response_part[1])
+                                raw_html = get_html_body(msg)
+                                
+                                subject, encoding = decode_header(msg["Subject"])[0]
+                                if isinstance(subject, bytes):
+                                    subject = subject.decode(encoding if encoding else "utf-8", errors="ignore")
+                                from_ = msg.get("From", "Unknown")
+                                
+                                cached_emails.append((subject, from_, raw_html))
+                                clean_b = clean_html_tags(raw_html)
+                                lbl, code = detect_otp_type(subject, clean_b)
+                                response_text += f"🔹 **[{lbl}]** Code: `{code}`\n📌 **Subject:** {subject}\n━━━━━━━━━━━━━━━━━━━\n"
+                mail.logout()
+            except imaplib.IMAP4.error as e:
+                response_text = "❌ **IMAP Login Failed!** Please check if your App Password and Email are correct."
+                logging.error(f"IMAP Error for {email_address}: {e}")
 
         elif provider == 'hotmail':
             url = "https://api-tools.yshshopmails.shop/api/v1/public/outlook/read_inbox"
@@ -421,16 +433,17 @@ def fetch_and_send_emails(chat_id, edit_message_id=None):
                         lbl, code = detect_otp_type(subject, clean_body)
                         response_text += f"🔹 **[{lbl}]** Code: `{code}`\n📌 **Subject:** {subject}\n━━━━━━━━━━━━━━━━━━━\n"
             else:
-                response_text = "❌ **API Error:** Could not load data."
+                response_text = "❌ **API Error:** Could not load Hotmail data."
 
-        conn = sqlite3.connect('mail_bot.db', check_same_thread=False)
-        cursor = conn.cursor()
-        cursor.execute("DELETE FROM email_cache WHERE user_id=?", (chat_id,))
-        for idx, (sub, snd, html_content) in enumerate(cached_emails):
-            cursor.execute("INSERT INTO email_cache (user_id, idx, subject, sender, full_content) VALUES (?, ?, ?, ?, ?)", 
-                           (chat_id, idx, sub, snd, html_content))
-        conn.commit()
-        conn.close()
+        # Update cache in DB
+        if cached_emails:
+            with sqlite3.connect('mail_bot.db', check_same_thread=False) as conn:
+                cursor = conn.cursor()
+                cursor.execute("DELETE FROM email_cache WHERE user_id=?", (chat_id,))
+                for idx, (sub, snd, html_content) in enumerate(cached_emails):
+                    cursor.execute("INSERT INTO email_cache (user_id, idx, subject, sender, full_content) VALUES (?, ?, ?, ?, ?)", 
+                                   (chat_id, idx, sub, snd, html_content))
+                conn.commit()
 
         current_time = datetime.now().strftime("%I:%M:%S %p")
         response_text += f"\n🕒 *Last Refresh:* {current_time}"
@@ -458,13 +471,15 @@ def fetch_and_send_emails(chat_id, edit_message_id=None):
             active_menu_messages[chat_id] = sent_msg.message_id
 
     except Exception as e:
+        error_msg = "⚠️ Error processing data or session expired."
+        logging.error(f"Fetch Error: {e}")
         if edit_message_id:
             try:
-                bot.edit_message_text(chat_id=chat_id, message_id=edit_message_id, text="⚠️ Error reading data or session expired.", parse_mode="Markdown")
+                bot.edit_message_text(chat_id=chat_id, message_id=edit_message_id, text=error_msg, parse_mode="Markdown")
             except Exception:
-                bot.send_message(chat_id, "⚠️ Error reading data.")
+                bot.send_message(chat_id, error_msg)
         else:
-            bot.send_message(chat_id, "⚠️ Error reading data.")
+            bot.send_message(chat_id, error_msg)
 
 # --- Run Flask Server, Background Cleanup, and Telegram Bot Together ---
 if __name__ == "__main__":
