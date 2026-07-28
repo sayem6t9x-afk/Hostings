@@ -14,6 +14,12 @@ import threading
 import time
 from flask import Flask
 
+# 2FA Generater er jonno built-in module gulo
+import hmac
+import base64
+import struct
+import hashlib
+
 # ==========================================
 # ⚙️ CONFIGURATIONS & LOGGING
 # ==========================================
@@ -22,8 +28,11 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 BOT_TOKEN = '8465423862:AAHkZn88S_jr1aZpBZXzJb_EUxLSXscPZzo'
 bot = telebot.TeleBot(BOT_TOKEN)
 
-# Tomar Admin ID
+# 👑 TOMAR ADMIN ID & CLICKABLE LINK
 ADMIN_ID = 5605925198 
+ADMIN_USERNAME_LINK = "[@sayem6t9](https://t.me/sayem6t9)"
+
+BANNED_MSG = f"🚫 **You have been BANNED from using this bot!**\n\nTo request an unban, please message the Admin: {ADMIN_USERNAME_LINK}"
 
 # ==========================================
 # 🧹 STRICT UI TRACKER (Message Management)
@@ -59,7 +68,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Mail Bot is Running Successfully! Premium Version V2.2"
+    return "Mail Bot is Running Successfully! Premium Version V2.6 (2FA & Username Ban Enabled)"
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -73,12 +82,32 @@ def init_db():
         cursor = conn.cursor()
         cursor.execute('''CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, email TEXT, password TEXT, provider TEXT, refresh_token TEXT, client_id TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
         cursor.execute('''CREATE TABLE IF NOT EXISTS email_cache (user_id INTEGER, idx INTEGER, subject TEXT, sender TEXT, full_content TEXT, PRIMARY KEY (user_id, idx))''')
-        cursor.execute('''CREATE TABLE IF NOT EXISTS user_settings (user_id INTEGER PRIMARY KEY, api_key TEXT, auto_delete INTEGER DEFAULT 1)''')
+        cursor.execute('''CREATE TABLE IF NOT EXISTS user_settings (user_id INTEGER PRIMARY KEY, api_key TEXT, auto_delete INTEGER DEFAULT 1, username TEXT)''')
         cursor.execute('''CREATE TABLE IF NOT EXISTS bulk_accounts (owner_id INTEGER, email TEXT PRIMARY KEY, password TEXT, provider TEXT, refresh_token TEXT, client_id TEXT)''')
         cursor.execute('''CREATE TABLE IF NOT EXISTS purchase_history (owner_id INTEGER, email TEXT, order_id TEXT, purchased_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+        cursor.execute('''CREATE TABLE IF NOT EXISTS banned_users (user_id INTEGER PRIMARY KEY)''')
+        
+        try: cursor.execute("ALTER TABLE user_settings ADD COLUMN username TEXT")
+        except: pass
+        
         conn.commit()
 
 init_db()
+
+# --- Helpers ---
+def save_user_info(user_id, username):
+    with sqlite3.connect('mail_bot.db', check_same_thread=False) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT user_id FROM user_settings WHERE user_id=?", (user_id,))
+        if not cursor.fetchone():
+            cursor.execute("INSERT INTO user_settings (user_id, auto_delete) VALUES (?, 1)", (user_id,))
+        if username:
+            cursor.execute("UPDATE user_settings SET username=? WHERE user_id=?", (username.lower(), user_id))
+        conn.commit()
+
+def is_user_banned(user_id):
+    with sqlite3.connect('mail_bot.db', check_same_thread=False) as conn:
+        return conn.cursor().execute("SELECT 1 FROM banned_users WHERE user_id=?", (user_id,)).fetchone() is not None
 
 def get_user_settings(user_id):
     with sqlite3.connect('mail_bot.db', check_same_thread=False) as conn:
@@ -107,17 +136,12 @@ def toggle_auto_delete(user_id):
         conn.commit()
     return bool(new_val)
 
-# 🔴 API VALIDATOR 
 def verify_yshshop_api(api_key):
-    """Checks if the provided API key is actually valid on yshshopmails server."""
-    if len(api_key) < 20 or " " in api_key: 
-        return False
+    if len(api_key) < 20 or " " in api_key: return False
     try:
         bal_resp = requests.get("https://yshshopmails.com/v1/api/user", headers={"api_key": api_key}, timeout=5).json()
-        if "balance" in bal_resp:
-            return True
-    except:
-        pass
+        if "balance" in bal_resp: return True
+    except: pass
     return False
 
 # ==========================================
@@ -136,8 +160,7 @@ def auto_cleanup_task():
             for chat_id, msgs in list(chat_history.items()):
                 for m_id in msgs: safe_delete(chat_id, m_id)
                 chat_history[chat_id] = []
-        except Exception as e:
-            logging.error(f"Cleanup error: {e}")
+        except Exception: pass
 
 # ==========================================
 # 🛠️ CORE LOGIC & PARSERS
@@ -165,37 +188,21 @@ def detect_otp_type(subject, content):
         return "📘 FACEBOOK OTP", (code_match.group(0) if code_match else "Not Found")
     return None, None
 
-# ==========================================
-# 👮‍♂️ ADMIN COMMANDS
-# ==========================================
-@bot.message_handler(commands=['admin'])
-def admin_panel(message):
-    chat_id = message.chat.id
-    track_message(chat_id, message.message_id)
-    if chat_id != ADMIN_ID:
-        err = bot.send_message(chat_id, "🚫 **Access Denied!** You are not the bot owner.", parse_mode="Markdown")
-        track_message(chat_id, err.message_id)
-        return
+# 🔐 NATIVE 2FA TOTP GENERATOR
+def get_totp_token(secret):
     try:
-        with sqlite3.connect('mail_bot.db', check_same_thread=False) as conn:
-            c = conn.cursor()
-            total_users = c.execute("SELECT COUNT(DISTINCT user_id) FROM user_settings").fetchone()[0]
-            total_bulk = c.execute("SELECT COUNT(*) FROM bulk_accounts").fetchone()[0]
-            total_history = c.execute("SELECT COUNT(*) FROM purchase_history").fetchone()[0]
-            
-        stats_msg = (
-            "👨‍💻 **Admin Dashboard**\n"
-            "━━━━━━━━━━━━━━━━━━━\n"
-            f"👥 **Total Registered Users:** `{total_users}`\n"
-            f"📁 **Total Bulk Accounts in DB:** `{total_bulk}`\n"
-            f"📜 **Total API Purchases Made:** `{total_history}`\n"
-            "━━━━━━━━━━━━━━━━━━━\n"
-            "✅ System is running perfectly."
-        )
-        msg = bot.send_message(chat_id, stats_msg, parse_mode="Markdown")
-        track_message(chat_id, msg.message_id)
-    except Exception as e:
-        bot.send_message(chat_id, f"Admin Error: {e}")
+        secret = secret.replace(' ', '').upper()
+        missing_padding = len(secret) % 8
+        if missing_padding != 0:
+            secret += '=' * (8 - missing_padding)
+        key = base64.b32decode(secret, casefold=True)
+        msg = struct.pack(">Q", int(time.time() // 30))
+        mac = hmac.new(key, msg, hashlib.sha1).digest()
+        offset = mac[-1] & 0x0f
+        binary = struct.unpack('>L', mac[offset:offset+4])[0] & 0x7fffffff
+        return str(binary % 1000000).zfill(6)
+    except Exception:
+        return None
 
 # ==========================================
 # 📱 MAIN MENU INTERFACE
@@ -203,8 +210,16 @@ def admin_panel(message):
 @bot.message_handler(commands=['start', 'menu'])
 def send_welcome(message):
     chat_id = message.chat.id
+    save_user_info(chat_id, message.from_user.username)
+    
     track_message(chat_id, message.message_id)
     clear_chat_history(chat_id)
+    
+    if is_user_banned(chat_id):
+        msg = bot.send_message(chat_id, BANNED_MSG, parse_mode="Markdown", disable_web_page_preview=True)
+        track_message(chat_id, msg.message_id)
+        return
+        
     show_main_instruction(chat_id)
 
 def show_main_instruction(chat_id, message_id=None):
@@ -222,6 +237,9 @@ def show_main_instruction(chat_id, message_id=None):
         types.InlineKeyboardButton("⚙️ Settings", callback_data="action_settings")
     )
     
+    if chat_id == ADMIN_ID:
+        markup.add(types.InlineKeyboardButton("👨‍💻 Admin Panel (Boss Only)", callback_data="action_admin_panel"))
+    
     instruction_text = (
         "🤖 **Auto Secure FB Mail & OTP Reader Bot**\n\n"
         "**🔥 SECURE BULK MODE ACTIVE!**\n"
@@ -231,7 +249,8 @@ def show_main_instruction(chat_id, message_id=None):
         "**Manual Input Format:**\n"
         "🏢 **Zoho/Yandex:** `email|AppPassword`\n"
         "🔴 **Gmail:** `email@gmail.com|OrderID`\n"
-        "🔥 **Hotmail:** `email|password|token|client_id`"
+        "🔥 **Hotmail:** `email|password|token|client_id`\n"
+        "🔐 **2FA Code:** Send `Secret Key` (e.g. JBSWY3DPEHPK3PXP)"
     )
     
     if message_id:
@@ -253,11 +272,78 @@ def handle_query(call):
     message_id = call.message.message_id
     track_message(chat_id, message_id)
     
-    # --- RESET TO MENU ---
+    if is_user_banned(chat_id):
+        bot.answer_callback_query(call.id, "🚫 You are BANNED!", show_alert=True)
+        bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=BANNED_MSG, parse_mode="Markdown", disable_web_page_preview=True)
+        return
+
     if call.data == "action_menu":
         clear_chat_history(chat_id, keep_message_id=message_id)
         show_main_instruction(chat_id, message_id=message_id)
         return
+
+    # 👑 ADMIN PANEL UI
+    elif call.data == "action_admin_panel":
+        if chat_id != ADMIN_ID: return
+        bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="⏳ **Loading Admin Stats...**", parse_mode="Markdown")
+        try:
+            with sqlite3.connect('mail_bot.db', check_same_thread=False) as conn:
+                c = conn.cursor()
+                total_users = c.execute("SELECT COUNT(DISTINCT user_id) FROM user_settings").fetchone()[0]
+                banned_count = c.execute("SELECT COUNT(*) FROM banned_users").fetchone()[0]
+                
+            stats_msg = (
+                "👨‍💻 **Secret Boss Dashboard**\n"
+                "━━━━━━━━━━━━━━━━━━━\n"
+                f"👥 **Total Registered Users:** `{total_users}`\n"
+                f"🚫 **Total Banned Users:** `{banned_count}`\n"
+                "━━━━━━━━━━━━━━━━━━━\n"
+                "🛡️ What would you like to do?"
+            )
+            markup = types.InlineKeyboardMarkup(row_width=2)
+            markup.add(types.InlineKeyboardButton("👥 View All Users", callback_data="admin_view_users"))
+            markup.add(
+                types.InlineKeyboardButton("🚫 Ban User", callback_data="admin_ban_user"),
+                types.InlineKeyboardButton("✅ Unban User", callback_data="admin_unban_user")
+            )
+            markup.add(types.InlineKeyboardButton("🏠 Back to Main Menu", callback_data="action_menu"))
+            bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=stats_msg, parse_mode="Markdown", reply_markup=markup)
+        except Exception as e:
+            bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"❌ Admin Error: {e}")
+
+    # 👑 ADMIN: VIEW ALL USERS
+    elif call.data == "admin_view_users":
+        if chat_id != ADMIN_ID: return
+        bot.answer_callback_query(call.id, "Generating User List...")
+        with sqlite3.connect('mail_bot.db', check_same_thread=False) as conn:
+            users = conn.cursor().execute("SELECT user_id, username FROM user_settings").fetchall()
+            
+        if not users:
+            bot.send_message(chat_id, "⚠️ No users found in database.")
+            return
+            
+        filename = f"Bot_Users_List.txt"
+        with open(filename, "w") as f:
+            f.write("--- 👥 Bot Registered Users ---\n\n")
+            for i, u in enumerate(users, 1): 
+                uname = f"@{u[1]}" if u[1] else "No Username"
+                f.write(f"{i}. ID: {u[0]} | Username: {uname}\n")
+            
+        with open(filename, "rb") as f:
+            bot.send_document(chat_id, f, caption=f"📊 **Total Users:** {len(users)}", parse_mode="Markdown")
+        os.remove(filename)
+
+    # 👑 ADMIN: BAN USER
+    elif call.data == "admin_ban_user":
+        if chat_id != ADMIN_ID: return
+        msg = bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="👇 **Send the User ID or @username you want to BAN:**", parse_mode="Markdown")
+        bot.register_next_step_handler(call.message, process_ban_step, msg.message_id)
+
+    # 👑 ADMIN: UNBAN USER
+    elif call.data == "admin_unban_user":
+        if chat_id != ADMIN_ID: return
+        msg = bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="👇 **Send the User ID or @username you want to UNBAN:**", parse_mode="Markdown")
+        bot.register_next_step_handler(call.message, process_unban_step, msg.message_id)
 
     # --- ADVANCED SETTINGS MENU ---
     elif call.data == "action_settings":
@@ -282,7 +368,6 @@ def handle_query(call):
         toggle_auto_delete(chat_id)
         handle_query(types.CallbackQuery(call.id, call.from_user, call.data, call.chat_instance, call.message, data="action_settings"))
 
-    # 🔴 API KEY SETUP WITH VALIDATION MESSAGE
     elif call.data == "action_set_api":
         msg = bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="👇 **Please send your valid 'yshshopmails' API Key now:**\n*(We will verify it live with the yshshopmails server)*", parse_mode="Markdown")
         bot.register_next_step_handler(call.message, process_api_key_step, msg.message_id)
@@ -396,7 +481,6 @@ def handle_query(call):
             markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
             bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"❌ **API Error:** {e}", parse_mode="Markdown", reply_markup=markup)
 
-    # 🔴 EXPLICIT yshshopmails BUY CONFIRMATION
     elif call.data == "action_buy_gmail":
         if not get_user_settings(chat_id)["api_key"]: 
             return bot.answer_callback_query(call.id, "⚠️ Set your yshshopmails API Key in Settings first!", show_alert=True)
@@ -440,7 +524,59 @@ def handle_query(call):
         send_full_mail_to_chat(chat_id, idx)
         bot.answer_callback_query(call.id)
 
-# 🔴 API KEY VERIFICATION & SAVING STEP
+# 👑 ADMIN SUB-HANDLERS
+def process_ban_step(message, edit_msg_id):
+    chat_id = message.chat.id
+    if chat_id != ADMIN_ID: return
+    try: bot.delete_message(chat_id, message.message_id)
+    except: pass
+    
+    target_input = message.text.strip()
+    markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🔙 Back to Admin", callback_data="action_admin_panel"))
+    user_to_ban = None
+    
+    with sqlite3.connect('mail_bot.db', check_same_thread=False) as conn:
+        cursor = conn.cursor()
+        if target_input.isdigit():
+            user_to_ban = int(target_input)
+        else:
+            uname = target_input.replace('@', '').lower()
+            row = cursor.execute("SELECT user_id FROM user_settings WHERE username=?", (uname,)).fetchone()
+            if row: user_to_ban = row[0]
+            
+        if user_to_ban:
+            cursor.execute("INSERT OR IGNORE INTO banned_users (user_id) VALUES (?)", (user_to_ban,))
+            conn.commit()
+            bot.edit_message_text(chat_id=chat_id, message_id=edit_msg_id, text=f"✅ **Success!**\nUser / ID `{target_input}` has been **BANNED**.", parse_mode="Markdown", reply_markup=markup)
+        else:
+            bot.edit_message_text(chat_id=chat_id, message_id=edit_msg_id, text=f"❌ **User Not Found!**\nNo user with username `{target_input}` found in database. Make sure they have started the bot.", parse_mode="Markdown", reply_markup=markup)
+
+def process_unban_step(message, edit_msg_id):
+    chat_id = message.chat.id
+    if chat_id != ADMIN_ID: return
+    try: bot.delete_message(chat_id, message.message_id)
+    except: pass
+    
+    target_input = message.text.strip()
+    markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🔙 Back to Admin", callback_data="action_admin_panel"))
+    user_to_unban = None
+    
+    with sqlite3.connect('mail_bot.db', check_same_thread=False) as conn:
+        cursor = conn.cursor()
+        if target_input.isdigit():
+            user_to_unban = int(target_input)
+        else:
+            uname = target_input.replace('@', '').lower()
+            row = cursor.execute("SELECT user_id FROM user_settings WHERE username=?", (uname,)).fetchone()
+            if row: user_to_unban = row[0]
+            
+        if user_to_unban:
+            cursor.execute("DELETE FROM banned_users WHERE user_id=?", (user_to_unban,))
+            conn.commit()
+            bot.edit_message_text(chat_id=chat_id, message_id=edit_msg_id, text=f"✅ **Success!**\nUser / ID `{target_input}` has been **UNBANNED**.", parse_mode="Markdown", reply_markup=markup)
+        else:
+            bot.edit_message_text(chat_id=chat_id, message_id=edit_msg_id, text=f"❌ **User Not Found!**\nCould not find `{target_input}` in database.", parse_mode="Markdown", reply_markup=markup)
+
 def process_api_key_step(message, edit_msg_id):
     chat_id, api_key = message.chat.id, message.text.strip()
     track_message(chat_id, message.message_id)
@@ -465,7 +601,16 @@ def process_api_key_step(message, edit_msg_id):
 @bot.message_handler(content_types=['document'])
 def handle_document(message):
     chat_id = message.chat.id
+    save_user_info(chat_id, message.from_user.username)
     track_message(chat_id, message.message_id)
+    
+    if is_user_banned(chat_id):
+        try: bot.delete_message(chat_id, message.message_id)
+        except: pass
+        msg = bot.send_message(chat_id, BANNED_MSG, parse_mode="Markdown", disable_web_page_preview=True)
+        track_message(chat_id, msg.message_id)
+        return
+        
     if not message.document.file_name.endswith('.txt'): 
         msg = bot.send_message(chat_id, "⚠️ Please upload a valid `.txt` file.")
         track_message(chat_id, msg.message_id)
@@ -503,16 +648,25 @@ def handle_document(message):
         track_message(chat_id, err.message_id)
 
 # ==========================================
-# 💬 GLOBAL TEXT LISTENER (Quick Fetch & Auto-Menu)
+# 💬 GLOBAL TEXT LISTENER (Quick Fetch, 2FA & Auto-Menu)
 # ==========================================
 @bot.message_handler(func=lambda message: message.text and not message.text.startswith('/'))
 def process_text_messages(message):
     chat_id, text = message.chat.id, message.text.strip()
+    save_user_info(chat_id, message.from_user.username)
     track_message(chat_id, message.message_id)
     try: bot.delete_message(chat_id, message.message_id)
     except: pass
+    
+    if is_user_banned(chat_id):
+        clear_chat_history(chat_id)
+        msg = bot.send_message(chat_id, BANNED_MSG, parse_mode="Markdown", disable_web_page_preview=True)
+        track_message(chat_id, msg.message_id)
+        return
+        
     if chat_id in active_menu_messages: safe_delete(chat_id, active_menu_messages.pop(chat_id))
 
+    # 1. MANUAL EMAIL INPUT
     if '|' in text:
         try:
             parts = [p.strip() for p in text.split('|')]
@@ -538,6 +692,7 @@ def process_text_messages(message):
             err = bot.send_message(chat_id, "❌ **Format Error!** Check manual format.", parse_mode="Markdown")
             track_message(chat_id, err.message_id)
 
+    # 2. BULK TXT FETCH EMAIL
     elif '@' in text and '.' in text:
         with sqlite3.connect('mail_bot.db', check_same_thread=False) as conn:
             cursor = conn.cursor()
@@ -557,6 +712,19 @@ def process_text_messages(message):
             else:
                 err = bot.send_message(chat_id, f"❌ **Error:** `{text}` not found in your Private DB!", parse_mode="Markdown")
                 track_message(chat_id, err.message_id)
+                
+    # 🔐 3. NATIVE 2FA TOTP CHECKER (If input is 16+ Alphanumeric chars)
+    elif re.match(r'^[A-Z2-7]{16,100}$', text.replace(" ", "").upper()):
+        code = get_totp_token(text)
+        if code:
+            markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🏠 Menu", callback_data="action_menu"))
+            msg = bot.send_message(chat_id, f"🔐 **Live 2FA Generator**\n━━━━━━━━━━━━━━━━━━━\n\n🔹 **Code:** `{code}`\n🔑 **Secret:** `{text}`\n\n*(Updates automatically every 30s in your auth app)*", parse_mode="Markdown", reply_markup=markup)
+            track_message(chat_id, msg.message_id)
+        else:
+            err = bot.send_message(chat_id, "❌ **Error!** Could not generate 2FA code. Check your Secret Key.", parse_mode="Markdown")
+            track_message(chat_id, err.message_id)
+
+    # 4. RANDOM TEXT -> OPEN MENU
     else:
         clear_chat_history(chat_id)
         show_main_instruction(chat_id)
@@ -623,7 +791,6 @@ def fetch_and_send_emails(chat_id, edit_message_id=None, bulk_email_to_delete=No
         if provider == 'gmail':
             api_key = get_user_settings(chat_id)["api_key"]
             if not api_key:
-                # 🔴 EXPLICIT MISSING API WARNING
                 response_text = "❌ **yshshopmails API Key Missing!**\n\nPlease go to **⚙️ Settings** from the Main Menu and set your private **yshshopmails API key** first to read Gmail OTPs."
             else:
                 try:
@@ -763,7 +930,7 @@ if __name__ == "__main__":
     cleanup_thread.start()
     
     bot.remove_webhook()
-    logging.info("Premium V2.2 Started with Strict API Validation!")
+    logging.info("Premium V2.6 Started with Native 2FA TOTP Generator!")
     
     while True:
         try: bot.infinity_polling(skip_pending=True, interval=1, timeout=20)
