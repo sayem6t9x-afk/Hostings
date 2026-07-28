@@ -31,10 +31,6 @@ ADMIN_ID = 5605925198
 ADMIN_USERNAME_LINK = "[@sayem6t9](https://t.me/sayem6t9)"
 BANNED_MSG = f"🚫 **You have been BANNED from using this bot!**\n\nTo request an unban, please message the Admin: {ADMIN_USERNAME_LINK}"
 
-# 🛒 YSHSHOP API CONFIGURATION
-# 👇 Jodi stock ekhono na mile, API doc theke ashol Service ID ta eikhane boshiye diba
-YSH_SERVICE_CODE = "fb_gmail" 
-
 # ==========================================
 # 🧹 STRICT UI TRACKER (Message Management)
 # ==========================================
@@ -69,7 +65,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Mail Bot is Running Successfully! Premium Version V2.8 (Stock API Fixed)"
+    return "Mail Bot is Running Successfully! Premium Version V2.9 (Dynamic Service ID)"
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -88,6 +84,10 @@ def init_db():
         cursor.execute('''CREATE TABLE IF NOT EXISTS purchase_history (owner_id INTEGER, email TEXT, order_id TEXT, purchased_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
         cursor.execute('''CREATE TABLE IF NOT EXISTS banned_users (user_id INTEGER PRIMARY KEY)''')
         
+        # 🔧 Admin dynamic settings table
+        cursor.execute('''CREATE TABLE IF NOT EXISTS system_settings (key TEXT PRIMARY KEY, value TEXT)''')
+        cursor.execute("INSERT OR IGNORE INTO system_settings (key, value) VALUES ('service_code', 'facebook')")
+        
         try: cursor.execute("ALTER TABLE user_settings ADD COLUMN username TEXT")
         except: pass
         
@@ -97,6 +97,17 @@ def init_db():
         conn.commit()
 
 init_db()
+
+# --- Helpers ---
+def get_service_code():
+    with sqlite3.connect('mail_bot.db', check_same_thread=False) as conn:
+        res = conn.cursor().execute("SELECT value FROM system_settings WHERE key='service_code'").fetchone()
+        return res[0] if res else "facebook"
+
+def set_service_code(new_code):
+    with sqlite3.connect('mail_bot.db', check_same_thread=False) as conn:
+        conn.cursor().execute("UPDATE system_settings SET value=? WHERE key='service_code'", (new_code,))
+        conn.commit()
 
 def save_user_info(user_id, username):
     with sqlite3.connect('mail_bot.db', check_same_thread=False) as conn:
@@ -299,6 +310,7 @@ def handle_query(call):
                 "━━━━━━━━━━━━━━━━━━━\n"
                 f"👥 **Total Registered Users:** `{total_users}`\n"
                 f"🚫 **Total Banned Users:** `{banned_count}`\n"
+                f"🔧 **Current Service ID:** `{get_service_code()}`\n"
                 "━━━━━━━━━━━━━━━━━━━\n"
                 "🛡️ What would you like to do?"
             )
@@ -308,10 +320,22 @@ def handle_query(call):
                 types.InlineKeyboardButton("🚫 Ban User", callback_data="admin_ban_user"),
                 types.InlineKeyboardButton("✅ Unban User", callback_data="admin_unban_user")
             )
+            markup.add(types.InlineKeyboardButton("🔧 Set Service ID", callback_data="admin_set_service")) # NEW SETTING
             markup.add(types.InlineKeyboardButton("🏠 Back to Main Menu", callback_data="action_menu"))
             bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=stats_msg, parse_mode="Markdown", reply_markup=markup)
         except Exception as e:
             bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"❌ Admin Error: {e}")
+
+    # 🔧 NEW ADMIN FEATURE: Set Service Code dynamically
+    elif call.data == "admin_set_service":
+        if chat_id != ADMIN_ID: return
+        msg_text = (
+            f"👇 **Current yshshop Service ID:** `{get_service_code()}`\n\n"
+            "Please type and send the correct Service ID below.\n\n"
+            "*(Hint: Try numbers like `1`, `2`, `10` or strings like `facebook_gmail`. Check your API panel for the exact ID of the 420 stock product)*"
+        )
+        msg = bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=msg_text, parse_mode="Markdown")
+        bot.register_next_step_handler(call.message, process_service_code_step, msg.message_id)
 
     elif call.data == "admin_view_users":
         if chat_id != ADMIN_ID: return
@@ -450,12 +474,13 @@ def handle_query(call):
             bot.answer_callback_query(call.id, "⚠️ Account not found! It may have been processed.", show_alert=True)
             handle_query(types.CallbackQuery(call.id, call.from_user, call.data, call.chat_instance, call.message, data="action_bulk_list"))
 
-    # 🛒 STOCK CHECK UPDATE: Uses the dynamic YSH_SERVICE_CODE
+    # 🛒 STOCK CHECK UPDATE: Reads Service ID dynamically from database!
     elif call.data == "action_check_stock":
         try:
             bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="⏳ **Working... Fetching yshshopmails Live Data**", parse_mode="Markdown")
+            current_service_code = get_service_code()
             stock_url = "https://yshshopmails.com/v1/stock"
-            stock_resp = requests.get(stock_url, params={"service": YSH_SERVICE_CODE}).json()
+            stock_resp = requests.get(stock_url, params={"service": current_service_code}).json()
             stock_count = stock_resp.get("stock", "Error")
             price = stock_resp.get("price", "Error")
             
@@ -469,7 +494,7 @@ def handle_query(call):
             with sqlite3.connect('mail_bot.db', check_same_thread=False) as conn:
                 local_stock = conn.cursor().execute("SELECT COUNT(*) FROM bulk_accounts WHERE owner_id=?", (chat_id,)).fetchone()[0]
 
-            dashboard_text = f"📊 **yshshopmails Server Dashboard**\n━━━━━━━━━━━━━━━━━━━\n📦 **FB Gmail Stock:** `{stock_count}` pcs\n💰 **Price per Acc:** `${price}`\n💳 **Your Balance:** `{balance}`\n━━━━━━━━━━━━━━━━━━━\n📁 **Your Local TXT Stock:** `{local_stock}` accounts."
+            dashboard_text = f"📊 **yshshopmails Server Dashboard**\n━━━━━━━━━━━━━━━━━━━\n📦 **FB Gmail Stock:** `{stock_count}` pcs\n💰 **Price per Acc:** `${price}`\n💳 **Your Balance:** `{balance}`\n━━━━━━━━━━━━━━━━━━━\n📁 **Your Local TXT Stock:** `{local_stock}` accounts.\n\n*(Service API Code: `{current_service_code}`)*"
             markup = types.InlineKeyboardMarkup()
             markup.row(types.InlineKeyboardButton("🔄 Refresh", callback_data="action_check_stock"), types.InlineKeyboardButton("🛒 Buy Now", callback_data="action_buy_gmail"))
             markup.row(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
@@ -484,12 +509,13 @@ def handle_query(call):
         markup = types.InlineKeyboardMarkup(row_width=2).add(types.InlineKeyboardButton("✅ Confirm Purchase", callback_data="confirm_buy_gmail"), types.InlineKeyboardButton("🏠 Cancel", callback_data="action_menu"))
         bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="🛒 **Checkout Confirmation (yshshopmails)**\n\nAre you sure you want to deduct balance from your **yshshopmails** account and buy 1 Facebook Gmail?", parse_mode="Markdown", reply_markup=markup)
 
-    # 🛒 BUY SCRIPT UPDATE: Uses the dynamic YSH_SERVICE_CODE to ensure correct product purchase
+    # 🛒 BUY SCRIPT UPDATE: Reads Service ID dynamically from database!
     elif call.data == "confirm_buy_gmail":
         api_key = get_user_settings(chat_id)["api_key"]
+        current_service_code = get_service_code()
         try:
             bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="⏳ **Working... Calling yshshopmails API**", parse_mode="Markdown")
-            resp = requests.get(f"https://yshshopmails.com/v1/api/create-order.php?key={api_key}&service={YSH_SERVICE_CODE}").json()
+            resp = requests.get(f"https://yshshopmails.com/v1/api/create-order.php?key={api_key}&service={current_service_code}").json()
             if "mail" in resp and "order_id" in resp:
                 eml, ord_id = resp["mail"], resp["order_id"]
                 with sqlite3.connect('mail_bot.db', check_same_thread=False) as conn:
@@ -523,6 +549,18 @@ def handle_query(call):
         bot.answer_callback_query(call.id)
 
 # 👑 ADMIN SUB-HANDLERS
+def process_service_code_step(message, edit_msg_id):
+    chat_id = message.chat.id
+    if chat_id != ADMIN_ID: return
+    try: bot.delete_message(chat_id, message.message_id)
+    except: pass
+    
+    new_code = message.text.strip()
+    set_service_code(new_code)
+    
+    markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🔙 Back to Admin", callback_data="action_admin_panel"))
+    bot.edit_message_text(chat_id=chat_id, message_id=edit_msg_id, text=f"✅ **Service ID Successfully Updated!**\n\n**New ID:** `{new_code}`\n\nGo back to the Main Menu and click **📊 Check Stock** to verify if it works.", parse_mode="Markdown", reply_markup=markup)
+
 def process_ban_step(message, edit_msg_id):
     chat_id = message.chat.id
     if chat_id != ADMIN_ID: return
@@ -924,7 +962,7 @@ if __name__ == "__main__":
     cleanup_thread.start()
     
     bot.remove_webhook()
-    logging.info("Premium V2.8 Started! Stock API parameter is now configurable.")
+    logging.info("Premium V2.9 Started! Dynamic Service ID added to Admin Panel.")
     
     while True:
         try: bot.infinity_polling(skip_pending=True, interval=1, timeout=20)
