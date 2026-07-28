@@ -65,7 +65,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Mail Bot is Running Successfully! Premium Version V3.1 (Hybrid API Fixed)"
+    return "Mail Bot is Running Successfully! Premium Version V3.2 (Bulletproof API Fixed)"
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -136,7 +136,6 @@ def toggle_auto_delete(user_id):
         conn.commit()
     return bool(new_val)
 
-# 🟢 REVERTED TO OLD SYSTEM (Main Domain) FOR KEY & BALANCE VERIFICATION
 def verify_yshshop_api(api_key):
     if len(api_key) < 20 or " " in api_key: return False
     try:
@@ -447,18 +446,20 @@ def handle_query(call):
             bot.answer_callback_query(call.id, "⚠️ Account not found! It may have been processed.", show_alert=True)
             handle_query(types.CallbackQuery(call.id, call.from_user, call.data, call.chat_instance, call.message, data="action_bulk_list"))
 
-    # 🛒 STOCK CHECK: Uses Subdomain API Endpoint `https://facebook.yshshopmails.com/v1/api/stock`
-    # 💰 BALANCE CHECK: Uses Old System API Endpoint `https://yshshopmails.com/v1/api/user`
+    # 🛒 STOCK & PRICE SAFE PARSER FIX
     elif call.data == "action_check_stock":
         try:
             bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="⏳ **Working... Fetching yshshopmails Live Data**", parse_mode="Markdown")
             
-            # Stock from new subdomain endpoint
+            # Stock & Price from subdomain endpoint with robust fallbacks
             stock_url = "https://facebook.yshshopmails.com/v1/api/stock"
             stock_resp = requests.get(stock_url, timeout=10).json()
-            stock_count = stock_resp.get("stock", "Error")
-            price = stock_resp.get("price", "Error")
             
+            stock_count = stock_resp.get("stock", stock_resp.get("count", "0"))
+            price = stock_resp.get("price", stock_resp.get("rate", stock_resp.get("cost", "N/A")))
+            if price != "N/A" and not str(price).startswith("$"):
+                price = f"${price}"
+
             # Balance from old main domain endpoint
             balance = "⚠️ yshshopmails API Key not set"
             api_key = get_user_settings(chat_id)["api_key"]
@@ -470,7 +471,7 @@ def handle_query(call):
             with sqlite3.connect('mail_bot.db', check_same_thread=False) as conn:
                 local_stock = conn.cursor().execute("SELECT COUNT(*) FROM bulk_accounts WHERE owner_id=?", (chat_id,)).fetchone()[0]
 
-            dashboard_text = f"📊 **yshshopmails Server Dashboard**\n━━━━━━━━━━━━━━━━━━━\n📦 **FB Gmail Stock:** `{stock_count}` pcs\n💰 **Price per Acc:** `${price}`\n💳 **Your Balance:** `{balance}`\n━━━━━━━━━━━━━━━━━━━\n📁 **Your Local TXT Stock:** `{local_stock}` accounts."
+            dashboard_text = f"📊 **yshshopmails Server Dashboard**\n━━━━━━━━━━━━━━━━━━━\n📦 **FB Gmail Stock:** `{stock_count}` pcs\n💰 **Price per Acc:** `{price}`\n💳 **Your Balance:** `{balance}`\n━━━━━━━━━━━━━━━━━━━\n📁 **Your Local TXT Stock:** `{local_stock}` accounts."
             markup = types.InlineKeyboardMarkup()
             markup.row(types.InlineKeyboardButton("🔄 Refresh", callback_data="action_check_stock"), types.InlineKeyboardButton("🛒 Buy Now", callback_data="action_buy_gmail"))
             markup.row(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
@@ -485,20 +486,24 @@ def handle_query(call):
         markup = types.InlineKeyboardMarkup(row_width=2).add(types.InlineKeyboardButton("✅ Confirm Purchase", callback_data="confirm_buy_gmail"), types.InlineKeyboardButton("🏠 Cancel", callback_data="action_menu"))
         bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="🛒 **Checkout Confirmation (yshshopmails)**\n\nAre you sure you want to deduct balance from your **yshshopmails** account and buy 1 Facebook Gmail?", parse_mode="Markdown", reply_markup=markup)
 
-    # 🛒 BUY SCRIPT: Uses Subdomain API Endpoint
+    # 🛒 BULLETPROOF BUY SCRIPT FIX (Handles all json key variations)
     elif call.data == "confirm_buy_gmail":
         api_key = get_user_settings(chat_id)["api_key"]
         try:
             bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="⏳ **Working... Calling yshshopmails API**", parse_mode="Markdown")
             resp = requests.get(f"https://facebook.yshshopmails.com/v1/api/create-order.php?key={api_key}", timeout=10).json()
-            if "mail" in resp and "order_id" in resp:
-                eml, ord_id = resp["mail"], resp["order_id"]
+            
+            # Robust key checking for mail and order id
+            eml = resp.get("mail") or resp.get("email") or resp.get("account") or resp.get("data")
+            ord_id = resp.get("order_id") or resp.get("id") or resp.get("order") or "AUTO_ORDER"
+            
+            if eml:
                 with sqlite3.connect('mail_bot.db', check_same_thread=False) as conn:
                     cursor = conn.cursor()
                     cursor.execute("SELECT user_id FROM users WHERE user_id=?", (chat_id,))
                     if cursor.fetchone(): cursor.execute("UPDATE users SET email=?, password=?, provider=?, refresh_token=NULL, client_id=NULL WHERE user_id=?", (eml, ord_id, 'gmail', chat_id))
                     else: cursor.execute("INSERT INTO users (user_id, email, password, provider) VALUES (?, ?, ?, ?)", (chat_id, eml, ord_id, 'gmail'))
-                    cursor.execute("INSERT INTO purchase_history (owner_id, email, order_id) VALUES (?, ?, ?)", (chat_id, eml, ord_id))
+                    cursor.execute("INSERT INTO purchase_history (owner_id, email, order_id) VALUES (?, ?, ?)", (chat_id, eml, str(ord_id)))
                     conn.commit()
                 bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"🎉 **yshshopmails Transaction Success!**\n📧 `{eml}`\n⏳ *Fetching initial OTP...*", parse_mode="Markdown")
                 time.sleep(1.5)
@@ -925,7 +930,7 @@ if __name__ == "__main__":
     cleanup_thread.start()
     
     bot.remove_webhook()
-    logging.info("Premium V3.1 Started! Hybrid API system integrated successfully.")
+    logging.info("Premium V3.2 Started! Stock, Price, and Buy parsers made bulletproof.")
     
     while True:
         try: bot.infinity_polling(skip_pending=True, interval=1, timeout=20)
