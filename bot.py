@@ -166,7 +166,7 @@ def show_main_instruction(chat_id, message_id=None):
     markup = types.InlineKeyboardMarkup(row_width=2)
     markup.add(
         types.InlineKeyboardButton("🛒 Buy Gmail", callback_data="action_buy_gmail"),
-        types.InlineKeyboardButton("📊 Check Stock", callback_data="action_check_stock")
+        types.InlineKeyboardButton("📊 Check Stock & Balance", callback_data="action_check_stock")
     )
     markup.add(
         types.InlineKeyboardButton("🔄 Refresh Inbox", callback_data="action_refresh_direct"),
@@ -229,6 +229,57 @@ def handle_query(call):
     elif call.data == "action_set_api":
         msg = bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="👇 **Please send your yshshopmails API Key now:**\n\n*(Your message will be automatically deleted for security)*", parse_mode="Markdown")
         bot.register_next_step_handler(call.message, process_api_key_step, msg.message_id)
+
+    # --- CHECK STOCK & BALANCE LOGIC ---
+    elif call.data == "action_check_stock":
+        try:
+            bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="⏳ **Fetching Live Stock & Balance...**", parse_mode="Markdown")
+            
+            # Fetch Stock (No API Key Required)
+            stock_url = "https://yshshopmails.com/v1/stock"
+            stock_params = {"service": "facebook"}
+            stock_resp = requests.get(stock_url, params=stock_params).json()
+            
+            stock_count = stock_resp.get("stock", "Error")
+            price = stock_resp.get("price", "Error")
+            
+            # Fetch Balance (API Key Required)
+            balance = "⚠️ API Key not set in Settings"
+            api_key = get_user_api_key(chat_id)
+            
+            if api_key:
+                bal_url = "https://yshshopmails.com/v1/api/user"
+                bal_headers = {"api_key": api_key}
+                bal_resp = requests.get(bal_url, headers=bal_headers).json()
+                
+                if "balance" in bal_resp:
+                    balance = f"${bal_resp['balance']}"
+                else:
+                    balance = "❌ Invalid API Key"
+
+            # Format Dashboard
+            dashboard_text = (
+                "📊 **Live Stock & Balance Dashboard**\n"
+                "━━━━━━━━━━━━━━━━━━━\n\n"
+                f"📦 **Facebook Gmail Stock:** `{stock_count}` pcs\n"
+                f"💰 **Price per account:** `${price}`\n"
+                f"💳 **Your Balance:** `{balance}`\n\n"
+                "━━━━━━━━━━━━━━━━━━━"
+            )
+            
+            markup = types.InlineKeyboardMarkup()
+            markup.row(
+                types.InlineKeyboardButton("🔄 Refresh Stock", callback_data="action_check_stock"),
+                types.InlineKeyboardButton("🛒 Buy Now", callback_data="action_buy_gmail")
+            )
+            markup.row(types.InlineKeyboardButton("🔙 Back to Menu", callback_data="action_menu"))
+            
+            bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=dashboard_text, parse_mode="Markdown", reply_markup=markup)
+            
+        except Exception as e:
+            bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"❌ **Error fetching data:** {e}", parse_mode="Markdown")
+            time.sleep(3)
+            show_main_instruction(chat_id, message_id=message_id)
 
     # --- BUY GMAIL CONFIRMATION LOGIC ---
     elif call.data == "action_buy_gmail":
@@ -305,9 +356,6 @@ def handle_query(call):
                 
         except Exception as e:
             bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"❌ **API Connection Error:** {e}", parse_mode="Markdown")
-
-    elif call.data == "action_check_stock":
-        bot.answer_callback_query(call.id, "⚠️ Stock API link pending from user!", show_alert=True)
 
     elif call.data == "action_refresh" or call.data == "action_refresh_direct":
         bot.answer_callback_query(call.id, "Refreshing Inbox...")
@@ -424,7 +472,6 @@ def send_full_mail_to_chat(chat_id, idx):
         cursor.execute("SELECT subject, sender, full_content FROM email_cache WHERE user_id=? AND idx=?", (chat_id, idx))
         row = cursor.fetchone()
         
-        # Get provider for dynamic logo
         cursor.execute("SELECT provider FROM users WHERE user_id=?", (chat_id,))
         user_row = cursor.fetchone()
         provider = user_row[0] if user_row else 'unknown'
@@ -436,12 +483,8 @@ def send_full_mail_to_chat(chat_id, idx):
         
     subject, sender, full_content = row
     clean_body = clean_html_tags(full_content)
-    
-    # 🔴 FIX FOR TELEGRAM MARKDOWN ERROR 🔴
-    # Remove characters from the body that trick Telegram into thinking it's broken Markdown
     safe_body = clean_body.replace('*', '').replace('_', '').replace('`', '').replace('[', '').replace(']', '')
     
-    # 🔴 FIX FOR DYNAMIC LOGO 🔴
     if provider == 'gmail':
         logo_url = "https://upload.wikimedia.org/wikipedia/commons/thumb/7/7e/Gmail_icon_%282020%29.svg/512px-Gmail_icon_%282020%29.svg.png"
     elif provider == 'hotmail':
@@ -449,7 +492,7 @@ def send_full_mail_to_chat(chat_id, idx):
     elif provider == 'zoho':
         logo_url = "https://upload.wikimedia.org/wikipedia/commons/thumb/3/36/Zoho_Corporation_logo.svg/512px-Zoho_Corporation_logo.svg.png"
     else:
-        logo_url = "https://cdn-icons-png.flaticon.com/512/732/732200.png" # generic mail icon
+        logo_url = "https://cdn-icons-png.flaticon.com/512/732/732200.png"
     
     message_text = (
         f"📬 **Email Details (FB Only)**\n\n"
@@ -467,7 +510,6 @@ def send_full_mail_to_chat(chat_id, idx):
             threading.Timer(600, lambda c=chat_id, m=sent_msg.message_id: safe_delete(c, m)).start()
     except Exception as e:
         logging.error(f"Photo send error: {e}")
-        # Fail-safe: Send text only if image load fails or text has weird parsing
         sent_msg = bot.send_message(chat_id, message_text, parse_mode="Markdown", disable_web_page_preview=True)
         if sent_msg:
             active_mail_messages[chat_id] = sent_msg.message_id
@@ -647,7 +689,7 @@ if __name__ == "__main__":
     cleanup_thread.start()
     
     bot.remove_webhook()
-    logging.info("Bot Started with Dynamic Logos & Error Filter!")
+    logging.info("Bot Started with Stock & Balance Dashboard!")
     
     while True:
         try:
