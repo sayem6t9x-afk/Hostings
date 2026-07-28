@@ -65,7 +65,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Mail Bot is Running Successfully! Premium Version V2.9 (Dynamic Service ID)"
+    return "Mail Bot is Running Successfully! Premium Version V3.0 (Subdomain API Fixed)"
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -84,7 +84,6 @@ def init_db():
         cursor.execute('''CREATE TABLE IF NOT EXISTS purchase_history (owner_id INTEGER, email TEXT, order_id TEXT, purchased_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
         cursor.execute('''CREATE TABLE IF NOT EXISTS banned_users (user_id INTEGER PRIMARY KEY)''')
         
-        # 🔧 Admin dynamic settings table
         cursor.execute('''CREATE TABLE IF NOT EXISTS system_settings (key TEXT PRIMARY KEY, value TEXT)''')
         cursor.execute("INSERT OR IGNORE INTO system_settings (key, value) VALUES ('service_code', 'facebook')")
         
@@ -98,7 +97,6 @@ def init_db():
 
 init_db()
 
-# --- Helpers ---
 def get_service_code():
     with sqlite3.connect('mail_bot.db', check_same_thread=False) as conn:
         res = conn.cursor().execute("SELECT value FROM system_settings WHERE key='service_code'").fetchone()
@@ -154,7 +152,7 @@ def toggle_auto_delete(user_id):
 def verify_yshshop_api(api_key):
     if len(api_key) < 20 or " " in api_key: return False
     try:
-        bal_resp = requests.get("https://yshshopmails.com/v1/api/user", headers={"api_key": api_key}, timeout=5).json()
+        bal_resp = requests.get("https://facebook.yshshopmails.com/v1/api/user", headers={"api_key": api_key}, timeout=5).json()
         if "balance" in bal_resp: return True
     except: pass
     return False
@@ -320,19 +318,17 @@ def handle_query(call):
                 types.InlineKeyboardButton("🚫 Ban User", callback_data="admin_ban_user"),
                 types.InlineKeyboardButton("✅ Unban User", callback_data="admin_unban_user")
             )
-            markup.add(types.InlineKeyboardButton("🔧 Set Service ID", callback_data="admin_set_service")) # NEW SETTING
+            markup.add(types.InlineKeyboardButton("🔧 Set Service ID", callback_data="admin_set_service"))
             markup.add(types.InlineKeyboardButton("🏠 Back to Main Menu", callback_data="action_menu"))
             bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=stats_msg, parse_mode="Markdown", reply_markup=markup)
         except Exception as e:
             bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"❌ Admin Error: {e}")
 
-    # 🔧 NEW ADMIN FEATURE: Set Service Code dynamically
     elif call.data == "admin_set_service":
         if chat_id != ADMIN_ID: return
         msg_text = (
-            f"👇 **Current yshshop Service ID:** `{get_service_code()}`\n\n"
-            "Please type and send the correct Service ID below.\n\n"
-            "*(Hint: Try numbers like `1`, `2`, `10` or strings like `facebook_gmail`. Check your API panel for the exact ID of the 420 stock product)*"
+            f"👇 **Current Service ID:** `{get_service_code()}`\n\n"
+            "Please type and send the correct Service ID below."
         )
         msg = bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=msg_text, parse_mode="Markdown")
         bot.register_next_step_handler(call.message, process_service_code_step, msg.message_id)
@@ -474,27 +470,26 @@ def handle_query(call):
             bot.answer_callback_query(call.id, "⚠️ Account not found! It may have been processed.", show_alert=True)
             handle_query(types.CallbackQuery(call.id, call.from_user, call.data, call.chat_instance, call.message, data="action_bulk_list"))
 
-    # 🛒 STOCK CHECK UPDATE: Reads Service ID dynamically from database!
+    # 🛒 STOCK CHECK UPDATE: Uses Subdomain API Endpoint `https://facebook.yshshopmails.com/v1/api/stock`
     elif call.data == "action_check_stock":
         try:
             bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="⏳ **Working... Fetching yshshopmails Live Data**", parse_mode="Markdown")
-            current_service_code = get_service_code()
-            stock_url = "https://yshshopmails.com/v1/stock"
-            stock_resp = requests.get(stock_url, params={"service": current_service_code}).json()
+            stock_url = "https://facebook.yshshopmails.com/v1/api/stock"
+            stock_resp = requests.get(stock_url, timeout=10).json()
             stock_count = stock_resp.get("stock", "Error")
             price = stock_resp.get("price", "Error")
             
             balance = "⚠️ yshshopmails API Key not set"
             api_key = get_user_settings(chat_id)["api_key"]
             if api_key:
-                bal_resp = requests.get("https://yshshopmails.com/v1/api/user", headers={"api_key": api_key}).json()
+                bal_resp = requests.get("https://facebook.yshshopmails.com/v1/api/user", headers={"api_key": api_key}, timeout=5).json()
                 if "balance" in bal_resp: balance = f"${bal_resp['balance']}"
                 else: balance = "❌ Invalid API Key"
 
             with sqlite3.connect('mail_bot.db', check_same_thread=False) as conn:
                 local_stock = conn.cursor().execute("SELECT COUNT(*) FROM bulk_accounts WHERE owner_id=?", (chat_id,)).fetchone()[0]
 
-            dashboard_text = f"📊 **yshshopmails Server Dashboard**\n━━━━━━━━━━━━━━━━━━━\n📦 **FB Gmail Stock:** `{stock_count}` pcs\n💰 **Price per Acc:** `${price}`\n💳 **Your Balance:** `{balance}`\n━━━━━━━━━━━━━━━━━━━\n📁 **Your Local TXT Stock:** `{local_stock}` accounts.\n\n*(Service API Code: `{current_service_code}`)*"
+            dashboard_text = f"📊 **yshshopmails Server Dashboard**\n━━━━━━━━━━━━━━━━━━━\n📦 **FB Gmail Stock:** `{stock_count}` pcs\n💰 **Price per Acc:** `${price}`\n💳 **Your Balance:** `{balance}`\n━━━━━━━━━━━━━━━━━━━\n📁 **Your Local TXT Stock:** `{local_stock}` accounts."
             markup = types.InlineKeyboardMarkup()
             markup.row(types.InlineKeyboardButton("🔄 Refresh", callback_data="action_check_stock"), types.InlineKeyboardButton("🛒 Buy Now", callback_data="action_buy_gmail"))
             markup.row(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
@@ -509,13 +504,12 @@ def handle_query(call):
         markup = types.InlineKeyboardMarkup(row_width=2).add(types.InlineKeyboardButton("✅ Confirm Purchase", callback_data="confirm_buy_gmail"), types.InlineKeyboardButton("🏠 Cancel", callback_data="action_menu"))
         bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="🛒 **Checkout Confirmation (yshshopmails)**\n\nAre you sure you want to deduct balance from your **yshshopmails** account and buy 1 Facebook Gmail?", parse_mode="Markdown", reply_markup=markup)
 
-    # 🛒 BUY SCRIPT UPDATE: Reads Service ID dynamically from database!
+    # 🛒 BUY SCRIPT UPDATE: Uses Subdomain API Endpoint `https://facebook.yshshopmails.com/v1/api/create-order.php`
     elif call.data == "confirm_buy_gmail":
         api_key = get_user_settings(chat_id)["api_key"]
-        current_service_code = get_service_code()
         try:
             bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="⏳ **Working... Calling yshshopmails API**", parse_mode="Markdown")
-            resp = requests.get(f"https://yshshopmails.com/v1/api/create-order.php?key={api_key}&service={current_service_code}").json()
+            resp = requests.get(f"https://facebook.yshshopmails.com/v1/api/create-order.php?key={api_key}", timeout=10).json()
             if "mail" in resp and "order_id" in resp:
                 eml, ord_id = resp["mail"], resp["order_id"]
                 with sqlite3.connect('mail_bot.db', check_same_thread=False) as conn:
@@ -559,7 +553,7 @@ def process_service_code_step(message, edit_msg_id):
     set_service_code(new_code)
     
     markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🔙 Back to Admin", callback_data="action_admin_panel"))
-    bot.edit_message_text(chat_id=chat_id, message_id=edit_msg_id, text=f"✅ **Service ID Successfully Updated!**\n\n**New ID:** `{new_code}`\n\nGo back to the Main Menu and click **📊 Check Stock** to verify if it works.", parse_mode="Markdown", reply_markup=markup)
+    bot.edit_message_text(chat_id=chat_id, message_id=edit_msg_id, text=f"✅ **Service ID Successfully Updated!**\n\n**New ID:** `{new_code}`", parse_mode="Markdown", reply_markup=markup)
 
 def process_ban_step(message, edit_msg_id):
     chat_id = message.chat.id
@@ -589,7 +583,7 @@ def process_ban_step(message, edit_msg_id):
             conn.commit()
             bot.edit_message_text(chat_id=chat_id, message_id=edit_msg_id, text=f"✅ **Success!**\nUser / ID `{target_input}` has been **BANNED**.", parse_mode="Markdown", reply_markup=markup)
         else:
-            bot.edit_message_text(chat_id=chat_id, message_id=edit_msg_id, text=f"❌ **User Not Found!**\nNo user with username `{target_input}` found in database. Make sure they have started the bot.", parse_mode="Markdown", reply_markup=markup)
+            bot.edit_message_text(chat_id=chat_id, message_id=edit_msg_id, text=f"❌ **User Not Found!**\nNo user with username `{target_input}` found in database.", parse_mode="Markdown", reply_markup=markup)
 
 def process_unban_step(message, edit_msg_id):
     chat_id = message.chat.id
@@ -688,7 +682,7 @@ def handle_document(message):
         track_message(chat_id, err.message_id)
 
 # ==========================================
-# 💬 GLOBAL TEXT LISTENER (Quick Fetch & Auto-Menu)
+# 💬 GLOBAL TEXT LISTENER
 # ==========================================
 @bot.message_handler(func=lambda message: message.text and not message.text.startswith('/'))
 def process_text_messages(message):
@@ -828,7 +822,7 @@ def fetch_and_send_emails(chat_id, edit_message_id=None, bulk_email_to_delete=No
                 response_text = "❌ **yshshopmails API Key Missing!**\n\nPlease go to **⚙️ Settings** from the Main Menu and set your private **yshshopmails API key** first to read Gmail OTPs."
             else:
                 try:
-                    data = requests.get(f"https://yshshopmails.com/v1/api/check-otp.php?key={api_key}&id={password}", timeout=10).json()
+                    data = requests.get(f"https://facebook.yshshopmails.com/v1/api/check-otp.php?key={api_key}&id={password}", timeout=10).json()
                     if "otp" in data and data["otp"]:
                         otp_found = True
                         otp_code = data["otp"]
@@ -962,7 +956,7 @@ if __name__ == "__main__":
     cleanup_thread.start()
     
     bot.remove_webhook()
-    logging.info("Premium V2.9 Started! Dynamic Service ID added to Admin Panel.")
+    logging.info("Premium V3.0 Started! Subdomain API integration completed.")
     
     while True:
         try: bot.infinity_polling(skip_pending=True, interval=1, timeout=20)
