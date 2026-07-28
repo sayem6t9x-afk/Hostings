@@ -380,8 +380,15 @@ def fetch_and_send_emails(chat_id, edit_message_id=None):
             imap_server = 'imap.gmail.com' if provider == 'gmail' else 'imap.zoho.com'
             
             try:
+                # FIX: Clean alias (+) before login
+                login_email = email_address
+                if '+' in login_email and '@' in login_email:
+                    base_name, domain = login_email.split('@', 1)
+                    base_name = base_name.split('+')[0]
+                    login_email = f"{base_name}@{domain}"
+                
                 mail = imaplib.IMAP4_SSL(imap_server)
-                mail.login(email_address, password)
+                mail.login(login_email, password) # Logs in with base email
                 mail.select("inbox")
                 status, messages = mail.search(None, "ALL")
                 email_ids = messages[0].split()
