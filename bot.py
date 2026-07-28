@@ -1,6 +1,7 @@
 import telebot
 from telebot import types
 import imaplib
+import poplib
 import email
 from email.header import decode_header
 import sqlite3
@@ -65,6 +66,12 @@ def init_db():
 
 init_db()
 
+def safe_delete(chat_id, message_id):
+    try:
+        bot.delete_message(chat_id, message_id)
+    except:
+        pass
+
 # --- Background Task to Clean Data Every 10 Minutes ---
 def auto_cleanup_task():
     while True:
@@ -75,6 +82,13 @@ def auto_cleanup_task():
                 cursor.execute("DELETE FROM users")
                 cursor.execute("DELETE FROM email_cache")
                 conn.commit()
+                
+            # Force delete any remaining tracked messages from Telegram
+            for c_id, m_id in list(active_menu_messages.items()):
+                safe_delete(c_id, m_id)
+            for c_id, m_id in list(active_mail_messages.items()):
+                safe_delete(c_id, m_id)
+                
             active_mail_messages.clear()
             active_menu_messages.clear()
             logging.info("Auto-cleanup executed: Database and active views cleared after 10 minutes.")
@@ -102,34 +116,18 @@ def get_html_body(msg):
         return msg.get_payload(decode=True).decode(errors='ignore')
     return "No HTML Content Found."
 
-# --- Smart OTP / Service Detector ---
+# --- STRICT Facebook OTP Detector ---
 def detect_otp_type(subject, content):
     combined_text = (subject + " " + content).lower()
     
-    service_name = "🔑 GENERAL OTP"
+    # Return ONLY Facebook OTPs. Ignore everything else.
     if "facebook" in combined_text or "fb" in combined_text:
-        service_name = "📘 FACEBOOK OTP (FB-OTP)"
-    elif "instagram" in combined_text or "ig" in combined_text:
-        service_name = "📸 INSTAGRAM OTP (IG-OTP)"
-    elif "google" in combined_text or "gmail" in combined_text:
-        service_name = "🌐 GOOGLE OTP"
-    elif "whatsapp" in combined_text:
-        service_name = "💚 WHATSAPP OTP"
-    elif "telegram" in combined_text:
-        service_name = "✈️ TELEGRAM OTP"
-    elif "twitter" in combined_text or "x.com" in combined_text:
-        service_name = "🐦 TWITTER / X OTP"
-    elif "discord" in combined_text:
-        service_name = "🎮 DISCORD OTP"
-    elif "microsoft" in combined_text or "outlook" in combined_text:
-        service_name = "🪟 MICROSOFT OTP"
-    elif "netflix" in combined_text:
-        service_name = "🍿 NETFLIX OTP"
-
-    code_match = re.search(r'\b\d{4,8}\b', combined_text)
-    extracted_code = code_match.group(0) if code_match else "Not Found"
+        service_name = "📘 FACEBOOK OTP"
+        code_match = re.search(r'\b\d{6,8}\b', combined_text) # FB OTPs are usually 6-8 digits
+        extracted_code = code_match.group(0) if code_match else "Not Found"
+        return service_name, extracted_code
     
-    return service_name, extracted_code
+    return None, None
 
 # --- Main Menu / Start ---
 @bot.message_handler(commands=['start', 'menu'])
@@ -156,26 +154,25 @@ def show_main_instruction(chat_id, message_id=None):
     )
     
     instruction_text = (
-        "🤖 **Auto Secure Mail & OTP Reader Bot**\n\n"
-        "Send your mail credentials directly in chat to load your inbox:\n\n"
-        "🏢 **For Zoho / Zoho+ Alias:** `email@zohomail.com|AppPassword`\n"
+        "🤖 **Auto Secure FB Mail & OTP Reader Bot**\n\n"
+        "Send your mail credentials directly in chat AT ANY TIME:\n\n"
+        "🏢 **For Zoho / Alias:** `email@zohomail.com|AppPassword`\n"
         "🔴 **For Gmail:** `email@gmail.com|AppPassword`\n"
-        "🔥 **For Hotmail:** `email|password|refresh_token|client_id`\n\n"
-        "⚠️ *All data and opened emails automatically delete after 10 minutes for safety.*"
+        "🔥 **For Hotmail:** `email|password|token|client_id`\n\n"
+        "⚠️ *Bot will ONLY fetch the latest Facebook OTP.*"
     )
     
     if message_id:
         try:
             bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=instruction_text, parse_mode="Markdown", reply_markup=markup)
             active_menu_messages[chat_id] = message_id
-            bot.register_next_step_handler_by_chat_id(chat_id, process_auto_credentials)
             return
         except Exception:
             pass
             
     sent_msg = bot.send_message(chat_id, instruction_text, parse_mode="Markdown", reply_markup=markup)
     active_menu_messages[chat_id] = sent_msg.message_id
-    bot.register_next_step_handler_by_chat_id(chat_id, process_auto_credentials)
+    threading.Timer(600, lambda c=chat_id, m=sent_msg.message_id: safe_delete(c, m)).start()
 
 # --- Callback Handlers ---
 @bot.callback_query_handler(func=lambda call: True)
@@ -192,10 +189,10 @@ def handle_query(call):
         bot.answer_callback_query(call.id, "Help Guide")
         help_text = (
             "📖 **Bot Usage Guide:**\n\n"
-            "1. Send your credentials in the exact specified format.\n"
-            "2. Click on any `📖 Read Mail` button to check full content and extracted OTP.\n"
-            "3. Opening a new mail will instantly remove the previous one.\n"
-            "4. Everything wipes out automatically every 10 minutes."
+            "1. Just send your credentials in the format anytime.\n"
+            "2. Bot always stays awake and listens for login info.\n"
+            "3. It strictly filters out junk and shows only FB OTP.\n"
+            "4. Auto-deletes everything after 10 minutes."
         )
         markup = types.InlineKeyboardMarkup()
         markup.add(types.InlineKeyboardButton("🔙 Back to Menu", callback_data="action_menu"))
@@ -208,10 +205,10 @@ def handle_query(call):
         bot.answer_callback_query(call.id, "About Bot")
         about_text = (
             "ℹ️ **About Secure Mail Bot:**\n\n"
-            "• Direct Chat Telegram Email & OTP Reader\n"
-            "• Smart Auto-Detection for FB, IG, Google & More\n"
+            "• Always-On Credentials Listener\n"
+            "• Strict Facebook-Only OTP Fetching\n"
             "• Built-in Auto-Deletion Security\n"
-            "• Supports Gmail App Password & Zoho (+) Aliases"
+            "• Supports Gmail POP3 & Zoho Aliases"
         )
         markup = types.InlineKeyboardMarkup()
         markup.add(types.InlineKeyboardButton("🔙 Back to Menu", callback_data="action_menu"))
@@ -230,9 +227,14 @@ def handle_query(call):
         bot.answer_callback_query(call.id)
         
     elif call.data == "action_new_email":
-        show_main_instruction(chat_id, message_id=message_id)
+        try:
+            bot.delete_message(chat_id, message_id)
+        except:
+            pass
+        show_main_instruction(chat_id)
 
-# --- Auto Detect and Process Credentials ---
+# --- GLOBAL LISTENER: ALWAYS WAITING FOR CREDENTIALS ---
+@bot.message_handler(func=lambda message: '|' in message.text)
 def process_auto_credentials(message):
     chat_id = message.chat.id
     text = message.text.strip()
@@ -245,12 +247,10 @@ def process_auto_credentials(message):
     try:
         parts = [p.strip() for p in text.split('|')]
         
-        # Support for both Zoho and Gmail (2 parts expected)
         if len(parts) == 2:
             email_address, app_password = parts[0], parts[1]
             
-            # Auto detect provider
-            provider = 'zoho' # default
+            provider = 'zoho'
             if "gmail" in email_address.lower():
                 provider = 'gmail'
             elif "zoho" in email_address.lower():
@@ -265,7 +265,7 @@ def process_auto_credentials(message):
                     cursor.execute("INSERT INTO users (user_id, email, password, provider) VALUES (?, ?, ?, ?)", (chat_id, email_address, app_password, provider))
                 conn.commit()
 
-            msg = bot.send_message(chat_id, f"✅ **{provider.capitalize()} Mail Detected & Saved!**\nConnecting to Inbox...", parse_mode="Markdown")
+            msg = bot.send_message(chat_id, f"✅ **{provider.capitalize()} Mail Detected!**\nConnecting to Inbox...", parse_mode="Markdown")
             
             if chat_id in active_menu_messages:
                 try:
@@ -274,9 +274,8 @@ def process_auto_credentials(message):
                     pass
                     
             fetch_and_send_emails(chat_id)
-            threading.Timer(3.0, lambda: safe_delete(chat_id, msg.message_id)).start()
+            threading.Timer(3.0, lambda c=chat_id, m=msg.message_id: safe_delete(c, m)).start()
 
-        # Support for Hotmail API (4 parts expected)
         elif len(parts) >= 4:
             email_address, password, refresh_token, client_id = parts[0], parts[1], parts[2], parts[3]
             
@@ -289,7 +288,7 @@ def process_auto_credentials(message):
                     cursor.execute("INSERT INTO users (user_id, email, password, provider, refresh_token, client_id) VALUES (?, ?, ?, ?, ?, ?)", (chat_id, email_address, password, 'hotmail', refresh_token, client_id))
                 conn.commit()
 
-            msg = bot.send_message(chat_id, "✅ **Hotmail API Detected & Setup Completed!**", parse_mode="Markdown")
+            msg = bot.send_message(chat_id, "✅ **Hotmail Detected!**\nConnecting to Inbox...", parse_mode="Markdown")
             
             if chat_id in active_menu_messages:
                 try:
@@ -298,24 +297,15 @@ def process_auto_credentials(message):
                     pass
 
             fetch_and_send_emails(chat_id)
-            threading.Timer(3.0, lambda: safe_delete(chat_id, msg.message_id)).start()
+            threading.Timer(3.0, lambda c=chat_id, m=msg.message_id: safe_delete(c, m)).start()
         else:
             raise ValueError("Unknown format")
 
-        bot.register_next_step_handler_by_chat_id(chat_id, process_auto_credentials)
-
     except Exception:
         err_msg = bot.send_message(chat_id, "❌ **Invalid Format!**\nSend Zoho/Gmail: `email|AppPassword`\nSend Hotmail: `email|password|token|client_id`", parse_mode="Markdown")
-        bot.register_next_step_handler_by_chat_id(chat_id, process_auto_credentials)
-        threading.Timer(5.0, lambda: safe_delete(chat_id, err_msg.message_id)).start()
+        threading.Timer(5.0, lambda c=chat_id, m=err_msg.message_id: safe_delete(c, m)).start()
 
-def safe_delete(chat_id, message_id):
-    try:
-        bot.delete_message(chat_id, message_id)
-    except:
-        pass
-
-# --- Send Full Email Content and Extracted OTP Directly to Chat ---
+# --- Send Full Email Content Directly to Chat ---
 def send_full_mail_to_chat(chat_id, idx):
     if chat_id in active_mail_messages:
         try:
@@ -329,7 +319,8 @@ def send_full_mail_to_chat(chat_id, idx):
         row = cursor.fetchone()
     
     if not row:
-        bot.send_message(chat_id, "⚠️ Mail session expired. Please refresh the inbox.")
+        err_msg = bot.send_message(chat_id, "⚠️ Mail session expired. Please refresh the inbox.")
+        threading.Timer(60, lambda c=chat_id, m=err_msg.message_id: safe_delete(c, m)).start()
         return
         
     subject, sender, full_content = row
@@ -339,7 +330,7 @@ def send_full_mail_to_chat(chat_id, idx):
     otp_label, otp_code = detect_otp_type(subject, clean_body)
     
     message_text = (
-        f"📬 **Email Details #{idx + 1}**\n\n"
+        f"📬 **Email Details (FB Only)**\n\n"
         f"🏷️ **Detected Type:** `{otp_label}`\n"
         f"🔑 **Extracted Code:** `{otp_code}`\n\n"
         f"👤 **From:** {sender}\n"
@@ -353,14 +344,14 @@ def send_full_mail_to_chat(chat_id, idx):
         sent_msg = bot.send_photo(chat_id, logo_url, caption=message_text, parse_mode="Markdown")
         if sent_msg:
             active_mail_messages[chat_id] = sent_msg.message_id
-            threading.Timer(600, lambda: safe_delete(chat_id, sent_msg.message_id)).start()
+            threading.Timer(600, lambda c=chat_id, m=sent_msg.message_id: safe_delete(c, m)).start()
     except Exception:
         sent_msg = bot.send_message(chat_id, message_text, parse_mode="Markdown")
         if sent_msg:
             active_mail_messages[chat_id] = sent_msg.message_id
-            threading.Timer(600, lambda: safe_delete(chat_id, sent_msg.message_id)).start()
+            threading.Timer(600, lambda c=chat_id, m=sent_msg.message_id: safe_delete(c, m)).start()
 
-# --- Fetch Emails ---
+# --- Fetch Emails (Facebook Filtered & Limited to 1) ---
 def fetch_and_send_emails(chat_id, edit_message_id=None):
     with sqlite3.connect('mail_bot.db', check_same_thread=False) as conn:
         cursor = conn.cursor()
@@ -379,25 +370,27 @@ def fetch_and_send_emails(chat_id, edit_message_id=None):
         if provider in ['zoho', 'gmail']:
             imap_server = 'imap.gmail.com' if provider == 'gmail' else 'imap.zoho.com'
             
+            login_email = email_address
+            if '+' in login_email and '@' in login_email:
+                base_name, domain = login_email.split('@', 1)
+                base_name = base_name.split('+')[0]
+                login_email = f"{base_name}@{domain}"
+
             try:
-                # FIX: Clean alias (+) before login
-                login_email = email_address
-                if '+' in login_email and '@' in login_email:
-                    base_name, domain = login_email.split('@', 1)
-                    base_name = base_name.split('+')[0]
-                    login_email = f"{base_name}@{domain}"
-                
                 mail = imaplib.IMAP4_SSL(imap_server)
-                mail.login(login_email, password) # Logs in with base email
+                mail.login(login_email, password)
                 mail.select("inbox")
                 status, messages = mail.search(None, "ALL")
                 email_ids = messages[0].split()
 
                 if not email_ids:
-                    response_text = f"📭 **{email_address}** Inbox is empty."
+                    response_text = f"📭 **Inbox ({email_address})** is empty."
                 else:
-                    response_text = f"📨 **Latest Inbox ({email_address}):**\n\n"
-                    for e_id in reversed(email_ids[-3:]):
+                    response_text = f"📨 **Inbox ({email_address}):**\n\n"
+                    fb_found = False
+                    
+                    # Scan last 10 emails to find the latest FB OTP
+                    for e_id in reversed(email_ids[-10:]):
                         status, msg_data = mail.fetch(e_id, "(RFC822)")
                         for response_part in msg_data:
                             if isinstance(response_part, tuple):
@@ -409,14 +402,68 @@ def fetch_and_send_emails(chat_id, edit_message_id=None):
                                     subject = subject.decode(encoding if encoding else "utf-8", errors="ignore")
                                 from_ = msg.get("From", "Unknown")
                                 
-                                cached_emails.append((subject, from_, raw_html))
                                 clean_b = clean_html_tags(raw_html)
                                 lbl, code = detect_otp_type(subject, clean_b)
-                                response_text += f"🔹 **[{lbl}]** Code: `{code}`\n📌 **Subject:** {subject}\n━━━━━━━━━━━━━━━━━━━\n"
+                                
+                                if lbl: # Only grab if it is Facebook
+                                    cached_emails.append((subject, from_, raw_html))
+                                    response_text += f"🔹 **[{lbl}]** Code: `{code}`\n📌 **Subject:** {subject}\n━━━━━━━━━━━━━━━━━━━\n"
+                                    fb_found = True
+                                    break # Got 1 FB email, stop searching
+                        if fb_found:
+                            break
+                            
+                    if not fb_found:
+                        response_text = f"📭 **Inbox ({email_address})** No Facebook OTP found."
                 mail.logout()
+                
             except imaplib.IMAP4.error as e:
-                response_text = "❌ **IMAP Login Failed!** Please check if your App Password and Email are correct."
-                logging.error(f"IMAP Error for {email_address}: {e}")
+                # POP3 FALLBACK
+                if provider == 'gmail':
+                    logging.warning(f"IMAP failed for {email_address}, trying POP3 fallback...")
+                    try:
+                        pop_server = 'pop.gmail.com'
+                        mail_pop = poplib.POP3_SSL(pop_server)
+                        mail_pop.user(login_email)
+                        mail_pop.pass_(password)
+
+                        num_messages, total_size = mail_pop.stat()
+                        
+                        if num_messages == 0:
+                            response_text = f"📭 **Inbox ({email_address})** is empty (via POP3)."
+                        else:
+                            response_text = f"📨 **Inbox ({email_address}) [POP3]:**\n\n"
+                            fb_found = False
+                            start_msg = max(1, num_messages - 9)
+                            
+                            for i in range(num_messages, start_msg - 1, -1):
+                                response, lines, octets = mail_pop.retr(i)
+                                raw_email = b"\n".join(lines)
+                                msg = email.message_from_bytes(raw_email)
+                                raw_html = get_html_body(msg)
+                                
+                                subject, encoding = decode_header(msg["Subject"])[0]
+                                if isinstance(subject, bytes):
+                                    subject = subject.decode(encoding if encoding else "utf-8", errors="ignore")
+                                from_ = msg.get("From", "Unknown")
+                                
+                                clean_b = clean_html_tags(raw_html)
+                                lbl, code = detect_otp_type(subject, clean_b)
+                                
+                                if lbl:
+                                    cached_emails.append((subject, from_, raw_html))
+                                    response_text += f"🔹 **[{lbl}]** Code: `{code}`\n📌 **Subject:** {subject}\n━━━━━━━━━━━━━━━━━━━\n"
+                                    fb_found = True
+                                    break # Got 1 FB email, stop
+                                    
+                            if not fb_found:
+                                response_text = f"📭 **Inbox ({email_address})** No Facebook OTP found (via POP3)."
+                        mail_pop.quit()
+                    except Exception as pop_e:
+                        response_text = "❌ **Login Failed!** App Password is wrong or IP blocked."
+                        logging.error(f"POP3 Error for {email_address}: {pop_e}")
+                else:
+                    response_text = "❌ **IMAP Login Failed!** Check your App Password."
 
         elif provider == 'hotmail':
             url = "https://api-tools.yshshopmails.shop/api/v1/public/outlook/read_inbox"
@@ -427,22 +474,30 @@ def fetch_and_send_emails(chat_id, edit_message_id=None):
             if response.status_code == 200 and response.json().get("success"):
                 emails = response.json().get("data", [])
                 if not emails:
-                    response_text = f"📭 **{email_address}** Inbox is empty."
+                    response_text = f"📭 **Inbox ({email_address})** is empty."
                 else:
                     response_text = f"📨 **Inbox ({email_address}):**\n\n"
-                    for msg in emails[:3]:
+                    fb_found = False
+                    for msg in emails[:10]:
                         raw_body = msg.get("message", "No Content")
                         subject = msg.get("subject", "No Subject")
                         from_sender = msg.get("from", "Outlook User")
                         
-                        cached_emails.append((subject, from_sender, raw_body))
                         clean_body = clean_html_tags(raw_body)
                         lbl, code = detect_otp_type(subject, clean_body)
-                        response_text += f"🔹 **[{lbl}]** Code: `{code}`\n📌 **Subject:** {subject}\n━━━━━━━━━━━━━━━━━━━\n"
+                        
+                        if lbl:
+                            cached_emails.append((subject, from_sender, raw_body))
+                            response_text += f"🔹 **[{lbl}]** Code: `{code}`\n📌 **Subject:** {subject}\n━━━━━━━━━━━━━━━━━━━\n"
+                            fb_found = True
+                            break # Got 1 FB email
+                            
+                    if not fb_found:
+                        response_text = f"📭 **Inbox ({email_address})** No Facebook OTP found."
             else:
                 response_text = "❌ **API Error:** Could not load Hotmail data."
 
-        # Update cache in DB
+        # Cache Update
         if cached_emails:
             with sqlite3.connect('mail_bot.db', check_same_thread=False) as conn:
                 cursor = conn.cursor()
@@ -456,12 +511,10 @@ def fetch_and_send_emails(chat_id, edit_message_id=None):
         response_text += f"\n🕒 *Last Refresh:* {current_time}"
         
         markup = types.InlineKeyboardMarkup()
-        mail_buttons = []
-        for i in range(len(cached_emails)):
-            mail_buttons.append(types.InlineKeyboardButton(f"📖 Read Mail {i+1}", callback_data=f"view_mail_{i}"))
         
-        for i in range(0, len(mail_buttons), 2):
-            markup.row(*mail_buttons[i:i+2])
+        # Only show Read button if we found an email
+        if cached_emails:
+            markup.row(types.InlineKeyboardButton("📖 Read Mail", callback_data="view_mail_0"))
 
         markup.row(types.InlineKeyboardButton("🔄 Refresh", callback_data="action_refresh"), types.InlineKeyboardButton("➕ New Email", callback_data="action_new_email"))
         markup.row(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
@@ -473,9 +526,11 @@ def fetch_and_send_emails(chat_id, edit_message_id=None):
             except Exception:
                 sent_msg = bot.send_message(chat_id, response_text, parse_mode="Markdown", reply_markup=markup)
                 active_menu_messages[chat_id] = sent_msg.message_id
+                threading.Timer(600, lambda c=chat_id, m=sent_msg.message_id: safe_delete(c, m)).start()
         else:
             sent_msg = bot.send_message(chat_id, response_text, parse_mode="Markdown", reply_markup=markup)
             active_menu_messages[chat_id] = sent_msg.message_id
+            threading.Timer(600, lambda c=chat_id, m=sent_msg.message_id: safe_delete(c, m)).start()
 
     except Exception as e:
         error_msg = "⚠️ Error processing data or session expired."
@@ -484,11 +539,12 @@ def fetch_and_send_emails(chat_id, edit_message_id=None):
             try:
                 bot.edit_message_text(chat_id=chat_id, message_id=edit_message_id, text=error_msg, parse_mode="Markdown")
             except Exception:
-                bot.send_message(chat_id, error_msg)
+                err_msg = bot.send_message(chat_id, error_msg)
+                threading.Timer(60, lambda c=chat_id, m=err_msg.message_id: safe_delete(c, m)).start()
         else:
-            bot.send_message(chat_id, error_msg)
+            err_msg = bot.send_message(chat_id, error_msg)
+            threading.Timer(60, lambda c=chat_id, m=err_msg.message_id: safe_delete(c, m)).start()
 
-# --- Run Flask Server, Background Cleanup, and Telegram Bot Together ---
 if __name__ == "__main__":
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
