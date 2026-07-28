@@ -65,7 +65,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Mail Bot is Running Successfully! Premium Version V3.0 (Subdomain API Fixed)"
+    return "Mail Bot is Running Successfully! Premium Version V3.1 (Hybrid API Fixed)"
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -84,9 +84,6 @@ def init_db():
         cursor.execute('''CREATE TABLE IF NOT EXISTS purchase_history (owner_id INTEGER, email TEXT, order_id TEXT, purchased_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
         cursor.execute('''CREATE TABLE IF NOT EXISTS banned_users (user_id INTEGER PRIMARY KEY)''')
         
-        cursor.execute('''CREATE TABLE IF NOT EXISTS system_settings (key TEXT PRIMARY KEY, value TEXT)''')
-        cursor.execute("INSERT OR IGNORE INTO system_settings (key, value) VALUES ('service_code', 'facebook')")
-        
         try: cursor.execute("ALTER TABLE user_settings ADD COLUMN username TEXT")
         except: pass
         
@@ -96,16 +93,6 @@ def init_db():
         conn.commit()
 
 init_db()
-
-def get_service_code():
-    with sqlite3.connect('mail_bot.db', check_same_thread=False) as conn:
-        res = conn.cursor().execute("SELECT value FROM system_settings WHERE key='service_code'").fetchone()
-        return res[0] if res else "facebook"
-
-def set_service_code(new_code):
-    with sqlite3.connect('mail_bot.db', check_same_thread=False) as conn:
-        conn.cursor().execute("UPDATE system_settings SET value=? WHERE key='service_code'", (new_code,))
-        conn.commit()
 
 def save_user_info(user_id, username):
     with sqlite3.connect('mail_bot.db', check_same_thread=False) as conn:
@@ -149,10 +136,11 @@ def toggle_auto_delete(user_id):
         conn.commit()
     return bool(new_val)
 
+# 🟢 REVERTED TO OLD SYSTEM (Main Domain) FOR KEY & BALANCE VERIFICATION
 def verify_yshshop_api(api_key):
     if len(api_key) < 20 or " " in api_key: return False
     try:
-        bal_resp = requests.get("https://facebook.yshshopmails.com/v1/api/user", headers={"api_key": api_key}, timeout=5).json()
+        bal_resp = requests.get("https://yshshopmails.com/v1/api/user", headers={"api_key": api_key}, timeout=5).json()
         if "balance" in bal_resp: return True
     except: pass
     return False
@@ -308,7 +296,6 @@ def handle_query(call):
                 "━━━━━━━━━━━━━━━━━━━\n"
                 f"👥 **Total Registered Users:** `{total_users}`\n"
                 f"🚫 **Total Banned Users:** `{banned_count}`\n"
-                f"🔧 **Current Service ID:** `{get_service_code()}`\n"
                 "━━━━━━━━━━━━━━━━━━━\n"
                 "🛡️ What would you like to do?"
             )
@@ -318,20 +305,10 @@ def handle_query(call):
                 types.InlineKeyboardButton("🚫 Ban User", callback_data="admin_ban_user"),
                 types.InlineKeyboardButton("✅ Unban User", callback_data="admin_unban_user")
             )
-            markup.add(types.InlineKeyboardButton("🔧 Set Service ID", callback_data="admin_set_service"))
             markup.add(types.InlineKeyboardButton("🏠 Back to Main Menu", callback_data="action_menu"))
             bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=stats_msg, parse_mode="Markdown", reply_markup=markup)
         except Exception as e:
             bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"❌ Admin Error: {e}")
-
-    elif call.data == "admin_set_service":
-        if chat_id != ADMIN_ID: return
-        msg_text = (
-            f"👇 **Current Service ID:** `{get_service_code()}`\n\n"
-            "Please type and send the correct Service ID below."
-        )
-        msg = bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=msg_text, parse_mode="Markdown")
-        bot.register_next_step_handler(call.message, process_service_code_step, msg.message_id)
 
     elif call.data == "admin_view_users":
         if chat_id != ADMIN_ID: return
@@ -470,19 +447,23 @@ def handle_query(call):
             bot.answer_callback_query(call.id, "⚠️ Account not found! It may have been processed.", show_alert=True)
             handle_query(types.CallbackQuery(call.id, call.from_user, call.data, call.chat_instance, call.message, data="action_bulk_list"))
 
-    # 🛒 STOCK CHECK UPDATE: Uses Subdomain API Endpoint `https://facebook.yshshopmails.com/v1/api/stock`
+    # 🛒 STOCK CHECK: Uses Subdomain API Endpoint `https://facebook.yshshopmails.com/v1/api/stock`
+    # 💰 BALANCE CHECK: Uses Old System API Endpoint `https://yshshopmails.com/v1/api/user`
     elif call.data == "action_check_stock":
         try:
             bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="⏳ **Working... Fetching yshshopmails Live Data**", parse_mode="Markdown")
+            
+            # Stock from new subdomain endpoint
             stock_url = "https://facebook.yshshopmails.com/v1/api/stock"
             stock_resp = requests.get(stock_url, timeout=10).json()
             stock_count = stock_resp.get("stock", "Error")
             price = stock_resp.get("price", "Error")
             
+            # Balance from old main domain endpoint
             balance = "⚠️ yshshopmails API Key not set"
             api_key = get_user_settings(chat_id)["api_key"]
             if api_key:
-                bal_resp = requests.get("https://facebook.yshshopmails.com/v1/api/user", headers={"api_key": api_key}, timeout=5).json()
+                bal_resp = requests.get("https://yshshopmails.com/v1/api/user", headers={"api_key": api_key}, timeout=5).json()
                 if "balance" in bal_resp: balance = f"${bal_resp['balance']}"
                 else: balance = "❌ Invalid API Key"
 
@@ -504,7 +485,7 @@ def handle_query(call):
         markup = types.InlineKeyboardMarkup(row_width=2).add(types.InlineKeyboardButton("✅ Confirm Purchase", callback_data="confirm_buy_gmail"), types.InlineKeyboardButton("🏠 Cancel", callback_data="action_menu"))
         bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="🛒 **Checkout Confirmation (yshshopmails)**\n\nAre you sure you want to deduct balance from your **yshshopmails** account and buy 1 Facebook Gmail?", parse_mode="Markdown", reply_markup=markup)
 
-    # 🛒 BUY SCRIPT UPDATE: Uses Subdomain API Endpoint `https://facebook.yshshopmails.com/v1/api/create-order.php`
+    # 🛒 BUY SCRIPT: Uses Subdomain API Endpoint
     elif call.data == "confirm_buy_gmail":
         api_key = get_user_settings(chat_id)["api_key"]
         try:
@@ -543,18 +524,6 @@ def handle_query(call):
         bot.answer_callback_query(call.id)
 
 # 👑 ADMIN SUB-HANDLERS
-def process_service_code_step(message, edit_msg_id):
-    chat_id = message.chat.id
-    if chat_id != ADMIN_ID: return
-    try: bot.delete_message(chat_id, message.message_id)
-    except: pass
-    
-    new_code = message.text.strip()
-    set_service_code(new_code)
-    
-    markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🔙 Back to Admin", callback_data="action_admin_panel"))
-    bot.edit_message_text(chat_id=chat_id, message_id=edit_msg_id, text=f"✅ **Service ID Successfully Updated!**\n\n**New ID:** `{new_code}`", parse_mode="Markdown", reply_markup=markup)
-
 def process_ban_step(message, edit_msg_id):
     chat_id = message.chat.id
     if chat_id != ADMIN_ID: return
@@ -822,7 +791,7 @@ def fetch_and_send_emails(chat_id, edit_message_id=None, bulk_email_to_delete=No
                 response_text = "❌ **yshshopmails API Key Missing!**\n\nPlease go to **⚙️ Settings** from the Main Menu and set your private **yshshopmails API key** first to read Gmail OTPs."
             else:
                 try:
-                    data = requests.get(f"https://facebook.yshshopmails.com/v1/api/check-otp.php?key={api_key}&id={password}", timeout=10).json()
+                    data = requests.get(f"https://yshshopmails.com/v1/api/check-otp.php?key={api_key}&id={password}", timeout=10).json()
                     if "otp" in data and data["otp"]:
                         otp_found = True
                         otp_code = data["otp"]
@@ -956,7 +925,7 @@ if __name__ == "__main__":
     cleanup_thread.start()
     
     bot.remove_webhook()
-    logging.info("Premium V3.0 Started! Subdomain API integration completed.")
+    logging.info("Premium V3.1 Started! Hybrid API system integrated successfully.")
     
     while True:
         try: bot.infinity_polling(skip_pending=True, interval=1, timeout=20)
