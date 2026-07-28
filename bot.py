@@ -13,8 +13,6 @@ import os
 import threading
 import time
 from flask import Flask
-
-# 2FA Generater er jonno built-in module gulo
 import hmac
 import base64
 import struct
@@ -28,11 +26,14 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 BOT_TOKEN = '8465423862:AAHkZn88S_jr1aZpBZXzJb_EUxLSXscPZzo'
 bot = telebot.TeleBot(BOT_TOKEN)
 
-# 👑 TOMAR ADMIN ID & CLICKABLE LINK
+# 👑 ADMIN CONFIG
 ADMIN_ID = 5605925198 
 ADMIN_USERNAME_LINK = "[@sayem6t9](https://t.me/sayem6t9)"
-
 BANNED_MSG = f"🚫 **You have been BANNED from using this bot!**\n\nTo request an unban, please message the Admin: {ADMIN_USERNAME_LINK}"
+
+# 🛒 YSHSHOP API CONFIGURATION
+# 👇 Jodi stock ekhono na mile, API doc theke ashol Service ID ta eikhane boshiye diba
+YSH_SERVICE_CODE = "fb_gmail" 
 
 # ==========================================
 # 🧹 STRICT UI TRACKER (Message Management)
@@ -68,7 +69,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Mail Bot is Running Successfully! Premium Version V2.6 (2FA & Username Ban Enabled)"
+    return "Mail Bot is Running Successfully! Premium Version V2.8 (Stock API Fixed)"
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -90,11 +91,13 @@ def init_db():
         try: cursor.execute("ALTER TABLE user_settings ADD COLUMN username TEXT")
         except: pass
         
+        try: cursor.execute("DELETE FROM banned_users WHERE user_id=?", (ADMIN_ID,))
+        except: pass
+        
         conn.commit()
 
 init_db()
 
-# --- Helpers ---
 def save_user_info(user_id, username):
     with sqlite3.connect('mail_bot.db', check_same_thread=False) as conn:
         cursor = conn.cursor()
@@ -106,6 +109,7 @@ def save_user_info(user_id, username):
         conn.commit()
 
 def is_user_banned(user_id):
+    if user_id == ADMIN_ID: return False
     with sqlite3.connect('mail_bot.db', check_same_thread=False) as conn:
         return conn.cursor().execute("SELECT 1 FROM banned_users WHERE user_id=?", (user_id,)).fetchone() is not None
 
@@ -188,7 +192,6 @@ def detect_otp_type(subject, content):
         return "📘 FACEBOOK OTP", (code_match.group(0) if code_match else "Not Found")
     return None, None
 
-# 🔐 NATIVE 2FA TOTP GENERATOR
 def get_totp_token(secret):
     try:
         secret = secret.replace(' ', '').upper()
@@ -282,7 +285,6 @@ def handle_query(call):
         show_main_instruction(chat_id, message_id=message_id)
         return
 
-    # 👑 ADMIN PANEL UI
     elif call.data == "action_admin_panel":
         if chat_id != ADMIN_ID: return
         bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="⏳ **Loading Admin Stats...**", parse_mode="Markdown")
@@ -311,7 +313,6 @@ def handle_query(call):
         except Exception as e:
             bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"❌ Admin Error: {e}")
 
-    # 👑 ADMIN: VIEW ALL USERS
     elif call.data == "admin_view_users":
         if chat_id != ADMIN_ID: return
         bot.answer_callback_query(call.id, "Generating User List...")
@@ -333,19 +334,16 @@ def handle_query(call):
             bot.send_document(chat_id, f, caption=f"📊 **Total Users:** {len(users)}", parse_mode="Markdown")
         os.remove(filename)
 
-    # 👑 ADMIN: BAN USER
     elif call.data == "admin_ban_user":
         if chat_id != ADMIN_ID: return
         msg = bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="👇 **Send the User ID or @username you want to BAN:**", parse_mode="Markdown")
         bot.register_next_step_handler(call.message, process_ban_step, msg.message_id)
 
-    # 👑 ADMIN: UNBAN USER
     elif call.data == "admin_unban_user":
         if chat_id != ADMIN_ID: return
         msg = bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="👇 **Send the User ID or @username you want to UNBAN:**", parse_mode="Markdown")
         bot.register_next_step_handler(call.message, process_unban_step, msg.message_id)
 
-    # --- ADVANCED SETTINGS MENU ---
     elif call.data == "action_settings":
         settings = get_user_settings(chat_id)
         api_status = "✅ Set & Validated" if settings["api_key"] else "❌ Not Set"
@@ -372,7 +370,6 @@ def handle_query(call):
         msg = bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="👇 **Please send your valid 'yshshopmails' API Key now:**\n*(We will verify it live with the yshshopmails server)*", parse_mode="Markdown")
         bot.register_next_step_handler(call.message, process_api_key_step, msg.message_id)
 
-    # --- BUY HISTORY VIEWER ---
     elif call.data == "action_buy_history":
         with sqlite3.connect('mail_bot.db', check_same_thread=False) as conn:
             cursor = conn.cursor()
@@ -391,7 +388,6 @@ def handle_query(call):
         markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
         bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=history_text, parse_mode="Markdown", reply_markup=markup)
 
-    # --- BULK LIST SELECTOR & EXPORT ---
     elif call.data == "action_bulk_list":
         with sqlite3.connect('mail_bot.db', check_same_thread=False) as conn:
             cursor = conn.cursor()
@@ -454,11 +450,12 @@ def handle_query(call):
             bot.answer_callback_query(call.id, "⚠️ Account not found! It may have been processed.", show_alert=True)
             handle_query(types.CallbackQuery(call.id, call.from_user, call.data, call.chat_instance, call.message, data="action_bulk_list"))
 
+    # 🛒 STOCK CHECK UPDATE: Uses the dynamic YSH_SERVICE_CODE
     elif call.data == "action_check_stock":
         try:
             bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="⏳ **Working... Fetching yshshopmails Live Data**", parse_mode="Markdown")
             stock_url = "https://yshshopmails.com/v1/stock"
-            stock_resp = requests.get(stock_url, params={"service": "facebook"}).json()
+            stock_resp = requests.get(stock_url, params={"service": YSH_SERVICE_CODE}).json()
             stock_count = stock_resp.get("stock", "Error")
             price = stock_resp.get("price", "Error")
             
@@ -487,11 +484,12 @@ def handle_query(call):
         markup = types.InlineKeyboardMarkup(row_width=2).add(types.InlineKeyboardButton("✅ Confirm Purchase", callback_data="confirm_buy_gmail"), types.InlineKeyboardButton("🏠 Cancel", callback_data="action_menu"))
         bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="🛒 **Checkout Confirmation (yshshopmails)**\n\nAre you sure you want to deduct balance from your **yshshopmails** account and buy 1 Facebook Gmail?", parse_mode="Markdown", reply_markup=markup)
 
+    # 🛒 BUY SCRIPT UPDATE: Uses the dynamic YSH_SERVICE_CODE to ensure correct product purchase
     elif call.data == "confirm_buy_gmail":
         api_key = get_user_settings(chat_id)["api_key"]
         try:
             bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="⏳ **Working... Calling yshshopmails API**", parse_mode="Markdown")
-            resp = requests.get(f"https://yshshopmails.com/v1/api/create-order.php?key={api_key}&service=facebook").json()
+            resp = requests.get(f"https://yshshopmails.com/v1/api/create-order.php?key={api_key}&service={YSH_SERVICE_CODE}").json()
             if "mail" in resp and "order_id" in resp:
                 eml, ord_id = resp["mail"], resp["order_id"]
                 with sqlite3.connect('mail_bot.db', check_same_thread=False) as conn:
@@ -544,6 +542,10 @@ def process_ban_step(message, edit_msg_id):
             row = cursor.execute("SELECT user_id FROM user_settings WHERE username=?", (uname,)).fetchone()
             if row: user_to_ban = row[0]
             
+        if user_to_ban == ADMIN_ID:
+            bot.edit_message_text(chat_id=chat_id, message_id=edit_msg_id, text="❌ **Boss, Admin ke ban kora jabe na!**", parse_mode="Markdown", reply_markup=markup)
+            return
+
         if user_to_ban:
             cursor.execute("INSERT OR IGNORE INTO banned_users (user_id) VALUES (?)", (user_to_ban,))
             conn.commit()
@@ -648,7 +650,7 @@ def handle_document(message):
         track_message(chat_id, err.message_id)
 
 # ==========================================
-# 💬 GLOBAL TEXT LISTENER (Quick Fetch, 2FA & Auto-Menu)
+# 💬 GLOBAL TEXT LISTENER (Quick Fetch & Auto-Menu)
 # ==========================================
 @bot.message_handler(func=lambda message: message.text and not message.text.startswith('/'))
 def process_text_messages(message):
@@ -666,7 +668,6 @@ def process_text_messages(message):
         
     if chat_id in active_menu_messages: safe_delete(chat_id, active_menu_messages.pop(chat_id))
 
-    # 1. MANUAL EMAIL INPUT
     if '|' in text:
         try:
             parts = [p.strip() for p in text.split('|')]
@@ -692,7 +693,6 @@ def process_text_messages(message):
             err = bot.send_message(chat_id, "❌ **Format Error!** Check manual format.", parse_mode="Markdown")
             track_message(chat_id, err.message_id)
 
-    # 2. BULK TXT FETCH EMAIL
     elif '@' in text and '.' in text:
         with sqlite3.connect('mail_bot.db', check_same_thread=False) as conn:
             cursor = conn.cursor()
@@ -713,7 +713,6 @@ def process_text_messages(message):
                 err = bot.send_message(chat_id, f"❌ **Error:** `{text}` not found in your Private DB!", parse_mode="Markdown")
                 track_message(chat_id, err.message_id)
                 
-    # 🔐 3. NATIVE 2FA TOTP CHECKER (If input is 16+ Alphanumeric chars)
     elif re.match(r'^[A-Z2-7]{16,100}$', text.replace(" ", "").upper()):
         code = get_totp_token(text)
         if code:
@@ -723,8 +722,6 @@ def process_text_messages(message):
         else:
             err = bot.send_message(chat_id, "❌ **Error!** Could not generate 2FA code. Check your Secret Key.", parse_mode="Markdown")
             track_message(chat_id, err.message_id)
-
-    # 4. RANDOM TEXT -> OPEN MENU
     else:
         clear_chat_history(chat_id)
         show_main_instruction(chat_id)
@@ -787,7 +784,6 @@ def fetch_and_send_emails(chat_id, edit_message_id=None, bulk_email_to_delete=No
     otp_found = False
     
     try:
-        # --- GMAIL API LOGIC ---
         if provider == 'gmail':
             api_key = get_user_settings(chat_id)["api_key"]
             if not api_key:
@@ -805,7 +801,6 @@ def fetch_and_send_emails(chat_id, edit_message_id=None, bulk_email_to_delete=No
                     else: response_text = f"📭 **Live Inbox ({email_address})**\nScanning complete. No FB OTP found yet."
                 except: response_text = "❌ **API Connection Timeout.** Try again."
 
-        # --- ZOHO / YANDEX IMAP LOGIC ---
         elif provider in ['zoho', 'yandex']:
             login_email = email_address
             if '+' in login_email and '@' in login_email: login_email = f"{login_email.split('+')[0]}@{login_email.split('@')[1]}"
@@ -852,7 +847,6 @@ def fetch_and_send_emails(chat_id, edit_message_id=None, bulk_email_to_delete=No
                 mail.logout()
             except imaplib.IMAP4.error: response_text = "❌ **IMAP Authentication Failed!** Check Provider / Password."
 
-        # --- HOTMAIL API LOGIC ---
         elif provider == 'hotmail':
             url = "https://api-tools.yshshopmails.shop/api/v1/public/outlook/read_inbox"
             try:
@@ -930,7 +924,7 @@ if __name__ == "__main__":
     cleanup_thread.start()
     
     bot.remove_webhook()
-    logging.info("Premium V2.6 Started with Native 2FA TOTP Generator!")
+    logging.info("Premium V2.8 Started! Stock API parameter is now configurable.")
     
     while True:
         try: bot.infinity_polling(skip_pending=True, interval=1, timeout=20)
